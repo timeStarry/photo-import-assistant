@@ -1,0 +1,42 @@
+name: Windows build and synthetic tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build with Windows .NET Framework C# 5 compiler
+        run: ./scripts/build.ps1
+
+      - name: Run offline self-tests and synthetic WPF previews
+        id: synthetic-tests
+        run: ./scripts/test.ps1
+
+      - name: Upload synthetic reports and preview PNGs
+        if: ${{ always() && steps.synthetic-tests.outcome != 'skipped' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-synthetic-checks
+          path: |
+            artifacts/synthetic-*/self-test.txt
+            artifacts/synthetic-*/previews/render-check.txt
+            artifacts/synthetic-*/previews/*.png
+          if-no-files-found: warn
+          retention-days: 7
+          include-hidden-files: false
