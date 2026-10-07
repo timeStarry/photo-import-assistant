@@ -17,6 +17,17 @@ namespace PhotoImportV2
         {
             if (state == null) throw new ArgumentNullException("state");
             bool changed = false;
+            if (state.ExcludedExtensions == null)
+            {
+                state.ExcludedExtensions = MediaRules.DefaultExcluded();
+                changed = true;
+            }
+            else
+            {
+                var normalized = MediaRules.NormalizeExcluded(state.ExcludedExtensions);
+                if (!String.Equals(String.Join("|", normalized), String.Join("|", state.ExcludedExtensions), StringComparison.Ordinal))
+                { state.ExcludedExtensions = normalized; changed = true; }
+            }
             // An intentionally empty list is a user setting, not a legacy configuration.
             if (state.Destinations == null)
             {

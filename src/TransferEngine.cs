@@ -273,7 +273,7 @@ namespace PhotoImportV2
             return Path.Combine(Path.GetDirectoryName(original), Path.GetFileNameWithoutExtension(original) + suffix + Path.GetExtension(original));
         }
 
-        private static void CheckSnapshot(FileStream stream, long length, long writeTicks)
+        internal static void CheckSnapshot(FileStream stream, long length, long writeTicks)
         {
             Require(length >= 0 && writeTicks > 0, "Invalid source snapshot.");
             TransferNative.FileInformation information = TransferNative.Information(stream.SafeFileHandle, false);
@@ -297,7 +297,7 @@ namespace PhotoImportV2
             Require(input.ReadByte() == -1, "Source grew beyond its snapshot length.");
         }
 
-        private static string Hash(FileStream stream, long length)
+        internal static string Hash(FileStream stream, long length)
         {
             Require(length >= 0 && stream.Length == length, "File length does not match the verified snapshot.");
             stream.Position = 0;

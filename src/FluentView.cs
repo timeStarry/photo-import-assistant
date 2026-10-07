@@ -18,7 +18,7 @@ namespace PhotoImportV2
         bool refreshing, themeLoaded;
         string activePage = "import", lastLog, pickerSignature, cardsSignature, locationsSignature;
         Action primary;
-        public Action Register, Import, Preferences, Rescan, Cancel, Pause, OpenLogs, ChromeChanged, AddLocation;
+        public Action Register, Import, Preferences, Rescan, Cancel, Pause, OpenLogs, ChromeChanged, AddLocation, EditExclusions;
         public Action<string> SelectCard, ThemeChanged, FailureChanged;
         public Action<bool> StartupChanged, NewCardPromptChanged;
         public Action<string, string> LocationAction, CardAction;
@@ -42,6 +42,7 @@ namespace PhotoImportV2
             Connect("OpenLogsButton", delegate { if (OpenLogs != null) OpenLogs(); });
             Connect("ManageLocationsButton", delegate { ShowPage("locations"); });
             Connect("AddLocationButton", delegate { if (AddLocation != null) AddLocation(); });
+            Connect("ExclusionsButton", delegate { if (EditExclusions != null) EditExclusions(); });
             Get<ComboBox>("CardPicker").SelectionChanged += delegate {
                 if (!refreshing && SelectCard != null) { var item = Get<ComboBox>("CardPicker").SelectedItem as PickerItem; if (item != null) SelectCard(item.Root); }
             };
@@ -64,6 +65,9 @@ namespace PhotoImportV2
             using (var reader = new StreamReader(stream)) return reader.ReadToEnd();
         }
         T Get<T>(string name) where T : FrameworkElement { return (T)surface.FindName(name); }
+        internal string PrimaryCaption { get { return (string)Get<Button>("PrimaryAction").Content; } }
+        internal bool PrimaryEnabled { get { return Get<Button>("PrimaryAction").IsEnabled; } }
+        internal string PhotoCaption { get { return Get<TextBlock>("PhotoCount").Text; } }
         void Connect(string name, Action action) { Get<Button>(name).Click += delegate { action(); }; }
         void SystemThemeChanged(object sender, UserPreferenceChangedEventArgs e) { Dispatcher.BeginInvoke(new Action(ApplyTheme)); }
         void ApplyTheme()
@@ -118,20 +122,29 @@ namespace PhotoImportV2
                 bool duplicate = disk != null && !String.IsNullOrEmpty(disk.MarkerId) && disks.Count(d => String.Equals(d.MarkerId, disk.MarkerId, StringComparison.OrdinalIgnoreCase)) > 1;
                 string issue = disk == null ? null : disk.Error ?? disk.MarkerError ?? (duplicate ? "登记标识重复，请重新关联其中一张卡。" : null);
                 bool unregistered = disk != null && card == null;
+                var candidates = disk == null ? null : unregistered ? disk.Media.Where(f => MediaRules.Includes(f.RelativePath ?? f.SourcePath, state.ExcludedExtensions)).ToList() : disk.Plan == null ? null : disk.Plan.Candidates;
                 string signature = String.Join("|", disks.Select(d => d.Key + (Find(state, d) == null ? d.Label : Find(state, d).Name)));
                 var picker = Get<ComboBox>("CardPicker");
                 if (pickerSignature != signature) { picker.ItemsSource = disks.Select(d => new PickerItem { Root = d.Root, Label = (Find(state, d) == null ? d.Label : Find(state, d).Name) + " · " + d.Root.TrimEnd('\\') }).ToArray(); pickerSignature = signature; }
                 picker.SelectedValue = disk == null ? null : disk.Root; picker.Visibility = disks.Count > 1 ? Visibility.Visible : Visibility.Collapsed; picker.IsEnabled = !busy;
                 Get<TextBlock>("CardTitle").Text = card != null ? card.Name : disk != null ? String.IsNullOrEmpty(disk.Label) ? "未命名存储卡" : disk.Label : "等待存储卡";
                 Get<TextBlock>("CardSubtitle").Text = disk == null ? "插入 SD 卡" : disk.Root.TrimEnd('\\') + "  ·  " + MainWindow.Capacity(disk.Capacity) + (String.IsNullOrEmpty(disk.FileSystem) ? "" : "  ·  " + disk.FileSystem);
-                Get<TextBlock>("CardBadgeText").Text = busy ? status.Contains("登记") ? "登记中" : status.Contains("测试") ? "测试中" : "导入中" : issue != null ? "需检查" : disk == null ? "未连接" : unregistered ? "未登记" : disk.Media.Count == 0 ? "无媒体" : "就绪";
-                string tone = busy ? "Accent" : issue != null || unregistered ? "Warning" : disk == null ? "Muted" : "Success";
+                Get<TextBlock>("CardBadgeText").Text = busy ? status.Contains("登记") ? "登记中" : status.Contains("测试") ? "测试中" : status.Contains("对比") || status.Contains("目标目录") ? "对比中" : "导入中" : issue != null || (disk != null && disk.ComparisonError != null) ? "需检查" : disk == null ? "未连接" : unregistered ? "未登记" : candidates == null ? "待对比" : candidates.Count == 0 ? "无待导入" : "就绪";
+                string tone = busy ? "Accent" : issue != null || unregistered || (disk != null && disk.ComparisonError != null) ? "Warning" : disk == null ? "Muted" : "Success";
                 Get<Border>("CardBadge").Background = Brush(tone == "Muted" ? "HoverBrush" : tone + "SoftBrush");
                 Get<TextBlock>("CardBadgeText").Foreground = Brush(tone + "Brush");
                 Get<Grid>("MediaSummary").Visibility = disk == null ? Visibility.Collapsed : Visibility.Visible;
-                Get<TextBlock>("PhotoCount").Text = disk == null ? "—" : disk.Media.Count(m => !Video(m)).ToString("N0");
-                Get<TextBlock>("VideoCount").Text = disk == null ? "—" : disk.Media.Count(Video).ToString("N0");
-                Get<TextBlock>("MediaSize").Text = disk == null ? "—" : SizeText(disk.Media.Sum(m => m.Length));
+                Get<TextBlock>("PhotoLabel").Text = unregistered ? "照片" : "待导入照片";
+                Get<TextBlock>("VideoLabel").Text = unregistered ? "视频" : "待导入视频";
+                Get<TextBlock>("PhotoCount").Text = candidates == null ? "—" : candidates.Count(m => !Video(m)).ToString("N0");
+                Get<TextBlock>("VideoCount").Text = candidates == null ? "—" : candidates.Count(Video).ToString("N0");
+                Get<TextBlock>("MediaSize").Text = candidates == null ? "—" : SizeText(candidates.Sum(m => m.Length));
+                string comparisonSummary = disk == null || disk.Plan == null ? "" :
+                    (disk.Plan.ExistingCount > 0 ? "已存在 " + disk.Plan.ExistingCount.ToString("N0") + " 个" : "") +
+                    (disk.Plan.ExcludedCount > 0 ? (disk.Plan.ExistingCount > 0 ? " · " : "") + "已排除 " + disk.Plan.ExcludedCount.ToString("N0") + " 个" : "");
+                if (disk != null && disk.Plan != null && disk.Plan.Warnings.Count > 0) comparisonSummary += (comparisonSummary.Length > 0 ? "\r\n" : "") + "目标对比不完整 · 未确认文件保留为候选";
+                Get<TextBlock>("ComparisonSummary").Text = comparisonSummary;
+                Get<TextBlock>("ComparisonSummary").Visibility = comparisonSummary.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
                 Get<StackPanel>("StorageSummary").Visibility = disk != null && disk.FreeSpace.HasValue ? Visibility.Visible : Visibility.Collapsed;
                 if (disk != null && disk.FreeSpace.HasValue)
                 {
@@ -139,20 +152,21 @@ namespace PhotoImportV2
                     Get<TextBlock>("StorageText").Text = "可用 " + SizeText(disk.FreeSpace.Value) + " / " + SizeText(disk.Capacity);
                 }
                 bool scanError = (status ?? "").Contains("扫描失败") || (status ?? "").Contains("等待上次工作进程");
-                Get<TextBlock>("CardGuidance").Text = scanError ? "读取暂未完成，请刷新或查看活动记录。" : issue ?? (unregistered ? "登记后可使用此卡的导入偏好。" : "");
-                Get<Border>("GuidanceBox").Visibility = !busy && (scanError || issue != null || unregistered) ? Visibility.Visible : Visibility.Collapsed;
+                Get<TextBlock>("CardGuidance").Text = scanError ? "读取暂未完成，请刷新或查看活动记录。" : issue ?? (disk == null ? null : disk.ComparisonError) ?? (unregistered ? "登记后可使用此卡的导入偏好。" : "");
+                Get<Border>("GuidanceBox").Visibility = !busy && (scanError || issue != null || unregistered || (disk != null && disk.ComparisonError != null)) ? Visibility.Visible : Visibility.Collapsed;
                 Get<Grid>("CardActionRow").Visibility = busy ? Visibility.Collapsed : Visibility.Visible;
                 Get<Expander>("CardDetails").Visibility = disk == null || busy ? Visibility.Collapsed : Visibility.Visible;
                 Get<TextBox>("IdentityText").Text = disk == null ? "" : "卷标  " + disk.Label + "\r\n序列号  " + disk.Serial + "\r\n登记 UUID  " + (disk.MarkerId ?? "未登记");
                 var targets = ImportSettings.Ordered(state);
-                var main = Get<Button>("PrimaryAction"); main.Content = disk == null ? "等待插卡" : issue != null ? "刷新" : unregistered ? "登记存储卡" : targets.Count == 0 ? "选择导入位置" : "导入 " + disk.Media.Count.ToString("N0") + " 个文件";
-                primary = issue != null ? Rescan : unregistered ? Register : targets.Count == 0 ? (Action)delegate { ShowPage("locations"); } : Import;
-                main.IsEnabled = !busy && disk != null && (issue != null || unregistered || disk.Media.Count > 0);
+                var main = Get<Button>("PrimaryAction"); main.Content = disk == null ? "等待插卡" : issue != null ? "刷新" : unregistered ? "登记存储卡" : targets.Count == 0 ? "选择导入位置" : disk.ComparisonError != null ? "重新对比" : candidates == null ? "等待目标对比" : candidates.Count == 0 ? "没有新文件" : "导入 " + candidates.Count.ToString("N0") + " 个文件";
+                primary = issue != null || (disk != null && disk.ComparisonError != null) ? Rescan : unregistered ? Register : targets.Count == 0 ? (Action)delegate { ShowPage("locations"); } : Import;
+                main.IsEnabled = !busy && disk != null && (issue != null || unregistered || targets.Count == 0 || disk.ComparisonError != null || (candidates != null && candidates.Count > 0));
+                Get<Button>("ScanButton").IsEnabled = !busy;
                 Get<Button>("PreferencesButton").Visibility = card == null ? Visibility.Collapsed : Visibility.Visible; Get<Button>("PreferencesButton").IsEnabled = !busy;
                 Get<Button>("RegisterButton").Visibility = disk == null || (unregistered && !duplicate) ? Visibility.Collapsed : Visibility.Visible;
                 Get<Button>("RegisterButton").IsEnabled = !busy && disk != null && disk.Error == null && disk.MarkerError == null;
                 Get<Border>("ProgressCard").Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
-                Get<TextBlock>("ProgressTitle").Text = status.Contains("登记") ? "正在登记" : status.Contains("测试") ? "正在测试连接" : status.Contains("清理") ? "正在清理原件" : "正在导入";
+                Get<TextBlock>("ProgressTitle").Text = status.Contains("登记") ? "正在登记" : status.Contains("测试") ? "正在测试连接" : status.Contains("清理") ? "正在清理原件" : status.Contains("对比") || status.Contains("目标目录") ? "正在对比目标" : "正在导入";
                 Get<TextBlock>("ProgressDescription").Text = status;
                 Get<TextBlock>("ActiveDestinationText").Text = String.IsNullOrEmpty(activeDestination) ? "" : "保存到 " + activeDestination;
                 Get<ProgressBar>("TransferProgress").Value = progress; Get<ProgressBar>("TransferProgress").IsIndeterminate = busy && (progress == 0 || status.Contains("登记") || status.Contains("测试") || status.Contains("清理"));
@@ -167,6 +181,7 @@ namespace PhotoImportV2
                 Get<TextBlock>("StartupStatus").Text = startupBusy ? "正在更新…" : !state.StartAtLogin.HasValue ? "正在读取…" : state.StartAtLogin == true ? "登录后在托盘运行" : "通过快捷方式启动";
                 Get<CheckBox>("NewCardsCheck").IsChecked = state.PromptForNewCards != false;
                 Get<ComboBox>("FailurePicker").SelectedIndex = state.DestinationFailure == "Stop" ? 1 : 0; Get<TextBlock>("NextBatchNote").Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
+                Get<TextBlock>("ExclusionsSummary").Text = "照片和视频" + (state.ExcludedExtensions.Count > 0 ? " · 排除 " + String.Join(", ", state.ExcludedExtensions) : "");
                 RenderLocations(state, busy); RenderRegisteredCards(state, disks, busy);
                 if (lastLog != activity)
                 {

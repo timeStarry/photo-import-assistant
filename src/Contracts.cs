@@ -23,6 +23,7 @@ namespace PhotoImportV2
         public string Theme { get; set; }
         public List<DestinationRecord> Destinations { get; set; }
         public string DestinationFailure { get; set; }
+        public List<string> ExcludedExtensions { get; set; }
         public bool? PromptForNewCards { get; set; }
         public bool? StartAtLogin { get; set; }
         public int Version { get; set; }
@@ -62,6 +63,8 @@ namespace PhotoImportV2
         public string FileSystem { get; set; }
         public string Error { get; set; }
         public List<MediaItem> Media { get; set; }
+        public CandidatePlan Plan { get; set; }
+        public string ComparisonError { get; set; }
         public DiskSnapshot() { Media = new List<MediaItem>(); }
         public string Key { get { return Root + "|" + Serial + "|" + Capacity; } }
     }
@@ -91,6 +94,10 @@ namespace PhotoImportV2
         public string DestinationRoot { get; set; }
         public string DestinationKind { get; set; }
         public TransferReceipt Receipt { get; set; }
+        public List<MediaItem> CandidateFiles { get; set; }
+        public List<DestinationRecord> ComparisonTargets { get; set; }
+        public List<string> ExcludedExtensions { get; set; }
+        public string ProgressPath { get; set; }
     }
     public class WorkResult
     {
@@ -99,6 +106,21 @@ namespace PhotoImportV2
         public bool ReusedExisting { get; set; }
         public string Error { get; set; }
         public TransferReceipt Receipt { get; set; }
+        public CandidatePlan Plan { get; set; }
+    }
+    public class CandidatePlan
+    {
+        public List<MediaItem> Candidates { get; set; }
+        public int ExistingCount { get; set; }
+        public int ExcludedCount { get; set; }
+        public List<string> Warnings { get; set; }
+        public CandidatePlan() { Candidates = new List<MediaItem>(); Warnings = new List<string>(); }
+    }
+    public class CandidateProgress
+    {
+        public string Message { get; set; }
+        public int Processed { get; set; }
+        public int Total { get; set; }
     }
     public static class JsonFile
     {

@@ -98,7 +98,7 @@ function Invoke-SyntheticCheck {
 }
 
 $selfTestReport = Join-Path $runFolder 'self-test.txt'
-Invoke-SyntheticCheck -Switch '--self-test' -TargetPath $selfTestReport -ReportPath $selfTestReport -ExpectedPassLines 2
+Invoke-SyntheticCheck -Switch '--self-test' -TargetPath $selfTestReport -ReportPath $selfTestReport -ExpectedPassLines 5
 $renderReport = Join-Path $previewFolder 'render-check.txt'
 Invoke-SyntheticCheck -Switch '--render-previews' -TargetPath $previewFolder -ReportPath $renderReport -ExpectedPassLines 1
 $renderedFiles = @(Get-ChildItem -LiteralPath $previewFolder -Filter '*.png' -File)

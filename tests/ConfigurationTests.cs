@@ -17,6 +17,8 @@ namespace PhotoImportV2
             Test(passed, "migration is idempotent", Idempotence);
             Test(passed, "intentional empty list survives migration", EmptyList);
             Test(passed, "custom settings and card preferences survive", PreserveCustom);
+            Test(passed, "missing exclusions default to .dat and empty exclusions survive", ExclusionMigration);
+            Test(passed, "exclusions normalize without changing other settings", ExclusionNormalization);
             Test(passed, "enabled priority snapshots are independent", PrioritySnapshots);
             Test(passed, "Next Stop and final target use production retry policy", RetryTransitions);
             Test(passed, "production retry policy rejects invalid inputs", InvalidRetryInputs);
@@ -88,7 +90,7 @@ namespace PhotoImportV2
         {
             var destination = ImportSettings.ValidateDestination("自定义", @"N:\摄影\导入");
             destination.Enabled = false;
-            var state = new AppState { Destinations = new List<DestinationRecord> { destination }, DestinationFailure = "Stop", PromptForNewCards = false, StartAtLogin = false };
+            var state = new AppState { Destinations = new List<DestinationRecord> { destination }, DestinationFailure = "Stop", PromptForNewCards = false, StartAtLogin = false, ExcludedExtensions = MediaRules.DefaultExcluded() };
             var card = new CardRecord { Id = "card", AutoImport = true, DeleteMode = "Keep", NeedsBinding = true };
             state.Cards.Add(card);
             Assert(!ImportSettings.Normalize(state) && ReferenceEquals(destination, state.Destinations[0]) && !destination.Enabled &&
@@ -109,6 +111,23 @@ namespace PhotoImportV2
             Assert(snapshot[0].Name == "本地备份" && snapshot[0].Path == @"C:\Photos\Camera" && !ReferenceEquals(snapshot[1], remote), "Snapshot shares mutable entries.");
             snapshot[1].Enabled = false;
             Assert(remote.Enabled, "Snapshot mutated stored configuration.");
+        }
+        private static void ExclusionMigration()
+        {
+            AppState state = Fresh(); state.ExcludedExtensions = null;
+            Assert(ImportSettings.Normalize(state) && state.ExcludedExtensions.SequenceEqual(new[] { ".dat" }), "Missing exclusions were not migrated.");
+            state.ExcludedExtensions.Clear();
+            Assert(!ImportSettings.Normalize(state) && state.ExcludedExtensions.Count == 0, "Intentional empty exclusions were repopulated.");
+        }
+        private static void ExclusionNormalization()
+        {
+            AppState state = Fresh();
+            var destinations = state.Destinations;
+            state.ExcludedExtensions = new List<string> { "JPG", ".NEF", ".jpg" };
+            Assert(ImportSettings.Normalize(state) && state.ExcludedExtensions.SequenceEqual(new[] { ".jpg", ".nef" }) && ReferenceEquals(destinations, state.Destinations), "Exclusion normalization lost unrelated settings.");
+            Assert(!ImportSettings.Normalize(state), "Canonical exclusions trigger repeated migration.");
+            state.ExcludedExtensions = new List<string> { "*.jpg" };
+            Reject(delegate { ImportSettings.Normalize(state); });
         }
 
         private static void Clone()
@@ -298,13 +317,14 @@ namespace PhotoImportV2
                 AppState state = Fresh();
                 state.Destinations.Reverse(); state.Destinations[1].Enabled = false;
                 state.DestinationFailure = "Stop"; state.PromptForNewCards = false; state.StartAtLogin = false;
+                state.ExcludedExtensions = new List<string> { ".dat", ".jpg" };
                 state.Cards.Add(new CardRecord { Id = Guid.NewGuid().ToString("D"), Name = "尼康卡", AutoImport = true, DeleteMode = "Keep" });
                 JsonFile.Write(path, state);
                 AppState saved = JsonFile.Read<AppState>(path);
                 ImportSettings.ValidateConfig(saved);
                 Assert(!ImportSettings.Normalize(saved) && state.Destinations.Select(d => d.Id).SequenceEqual(saved.Destinations.Select(d => d.Id)) &&
                     saved.Destinations[0].Path == state.Destinations[0].Path && !saved.Destinations[1].Enabled && saved.DestinationFailure == "Stop" &&
-                    saved.PromptForNewCards == false && saved.StartAtLogin == false && saved.Cards[0].Name == "尼康卡" && saved.Cards[0].AutoImport && saved.Cards[0].DeleteMode == "Keep", "JSON roundtrip lost preferences.");
+                    saved.PromptForNewCards == false && saved.StartAtLogin == false && saved.Cards[0].Name == "尼康卡" && saved.Cards[0].AutoImport && saved.Cards[0].DeleteMode == "Keep" && saved.ExcludedExtensions.SequenceEqual(state.ExcludedExtensions), "JSON roundtrip lost preferences.");
                 saved.Destinations.Clear(); JsonFile.Write(path, saved);
                 AppState empty = JsonFile.Read<AppState>(path);
                 Assert(!ImportSettings.Normalize(empty) && empty.Destinations.Count == 0, "Persisted empty list was repopulated.");

@@ -69,14 +69,17 @@ namespace PhotoImportV2
                 try { if (File.Exists(output)) File.Delete(output); } catch { }
             }
         }
-        public static async Task<WorkResult> Run(WorkRequest request, string stateRoot, CancellationToken cancel)
+        public static async Task<WorkResult> Run(WorkRequest request, string stateRoot, CancellationToken cancel, Action<CandidateProgress> progress = null)
         {
             if (HasUnconfirmedWorker) throw new IOException("等待上次工作进程退出，暂不启动新操作。");
             string folder = Path.Combine(stateRoot, "jobs", Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(folder);
             string input = Path.Combine(folder, "request.json"), output = Path.Combine(folder, "result.json");
+            if (request.Operation == "plan") request.ProgressPath = Path.Combine(folder, "progress.json");
             JsonFile.Write(input, request);
             long length = request.File != null ? request.File.Length : request.Receipt != null ? request.Receipt.Length : 0;
+            if (request.Operation == "plan" && request.CandidateFiles != null)
+                foreach (var file in request.CandidateFiles) length = Math.Min(Int64.MaxValue / 2, length + Math.Min(Int64.MaxValue / 2, Math.Max(0, file.Length)));
             int seconds = request.Operation == "register" || request.Operation == "probe" ? 30 : (int)Math.Min(1800, 90 + length / (256 * 1024));
             Process process = null;
             try
@@ -91,8 +94,15 @@ namespace PhotoImportV2
                 {
                     cancel.ThrowIfCancellationRequested();
                     if (watch.Elapsed.TotalSeconds > seconds) throw new TimeoutException("连接或传输超时；已终止本次文件操作。");
+                    if (progress != null && request.Operation == "plan" && File.Exists(request.ProgressPath))
+                    {
+                        CandidateProgress value = null;
+                        try { value = JsonFile.Read<CandidateProgress>(request.ProgressPath); } catch (IOException) { }
+                        if (value != null) progress(value);
+                    }
                     await Task.Delay(150, cancel);
                 }
+                cancel.ThrowIfCancellationRequested();
                 if (!File.Exists(output)) return new WorkResult { Error = "工作进程没有返回结果；若操作为清理，请核对日志与卡内原件。" };
                 return JsonFile.Read<WorkResult>(output);
             }

@@ -35,14 +35,24 @@ namespace PhotoImportV2
             }
             if (args.Length == 3 && args[0] == "--worker")
             {
-                try { var request = JsonFile.Read<WorkRequest>(args[1]); JsonFile.Write(args[2], request.Operation == "register" ? RegistrationWorker.Run(request) : request.Operation == "probe" ? DestinationProbe.Run(request) : TransferEngine.Run(request)); return 0; }
+                try
+                {
+                    var request = JsonFile.Read<WorkRequest>(args[1]);
+                    if (request.Operation == "plan" && (String.IsNullOrEmpty(request.ProgressPath) ||
+                        !TransferPaths.Same(Path.GetDirectoryName(Path.GetFullPath(args[1])), Path.GetDirectoryName(Path.GetFullPath(request.ProgressPath)))))
+                        throw new IOException("Comparison progress must remain in the worker job directory.");
+                    JsonFile.Write(args[2], request.Operation == "register" ? RegistrationWorker.Run(request) : request.Operation == "probe" ? DestinationProbe.Run(request) :
+                        request.Operation == "plan" ? CandidatePlanner.Run(request, delegate(CandidateProgress p) { JsonFile.Write(request.ProgressPath, p); }) : TransferEngine.Run(request));
+                    return 0;
+                }
                 catch (Exception ex) { try { JsonFile.Write(args[2], new WorkResult { Error = ex.ToString() }); } catch { } return 1; }
             }
             if (args.Length > 0 && args[0] == "--self-test")
             {
                 try
                 {
-                    string result = TransferEngineTests.Run() + Environment.NewLine + ConfigurationTests.Run();
+                    string result = TransferEngineTests.Run() + Environment.NewLine + ConfigurationTests.Run() + Environment.NewLine +
+                        MediaRulesTests.Run() + Environment.NewLine + CandidatePlannerTests.Run() + Environment.NewLine + CandidateWorkerTests.Run();
                     if (args.Length > 1) File.WriteAllText(args[1], result);
                     return 0;
                 }

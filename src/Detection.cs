@@ -11,7 +11,6 @@ namespace PhotoImportV2
     {
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
         static extern bool GetVolumeInformation(string root, StringBuilder name, int nameSize, out uint serial, out uint max, out uint flags, StringBuilder fs, int fsSize);
-        static readonly HashSet<string> Extensions = new HashSet<string>(new[] { ".jpg", ".jpeg", ".nef", ".nrw", ".mov", ".mp4", ".avi", ".tif", ".tiff" }, StringComparer.OrdinalIgnoreCase);
         public static DiskSnapshot ReadIdentity(string root)
         {
             var drive = new DriveInfo(root);
@@ -67,7 +66,7 @@ namespace PhotoImportV2
             foreach (string file in Directory.EnumerateFiles(directory))
             {
                 var info = new FileInfo(file);
-                if ((info.Attributes & FileAttributes.ReparsePoint) != 0 || !Extensions.Contains(info.Extension)) continue;
+                if ((info.Attributes & FileAttributes.ReparsePoint) != 0 || !MediaRules.IsSupported(info.Name)) continue;
                 disk.Media.Add(new MediaItem { SourcePath = info.FullName, RelativePath = info.FullName.Substring(disk.Root.Length), Length = info.Length, WriteTicks = info.LastWriteTimeUtc.Ticks });
             }
             foreach (string child in Directory.EnumerateDirectories(directory)) Enumerate(child, disk, depth + 1);
