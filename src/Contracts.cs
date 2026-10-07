@@ -27,6 +27,10 @@ namespace PhotoImportV2
         public bool? PromptForNewCards { get; set; }
         public bool? StartAtLogin { get; set; }
         public int Version { get; set; }
+        public int? MaxParallel { get; set; }
+        public int? IdleTimeoutSeconds { get; set; }
+        public bool? AutoParallel { get; set; }
+        public long? LargeFileBytes { get; set; }
         public List<CardRecord> Cards { get; set; }
         public AppState() { Version = 2; Cards = new List<CardRecord>(); }
     }
@@ -36,6 +40,12 @@ namespace PhotoImportV2
         public string Name { get; set; }
         public string Path { get; set; }
         public bool Enabled { get; set; }
+        public string Type { get; set; }
+        public string Endpoint { get; set; }
+        public string Bucket { get; set; }
+        public string Region { get; set; }
+        public string Prefix { get; set; }
+        public string CredentialTarget { get; set; }
         public DestinationRecord() { Enabled = true; }
     }
     public class CardMarker
@@ -98,6 +108,9 @@ namespace PhotoImportV2
         public List<DestinationRecord> ComparisonTargets { get; set; }
         public List<string> ExcludedExtensions { get; set; }
         public string ProgressPath { get; set; }
+        public DestinationRecord Target { get; set; }
+        public bool ReadOnlyProbe { get; set; }
+        public int IdleTimeoutSeconds { get; set; }
     }
     public class WorkResult
     {
@@ -107,6 +120,8 @@ namespace PhotoImportV2
         public string Error { get; set; }
         public TransferReceipt Receipt { get; set; }
         public CandidatePlan Plan { get; set; }
+        public string Detail { get; set; }
+        public long? FreeBytes { get; set; }
     }
     public class CandidatePlan
     {
@@ -121,6 +136,22 @@ namespace PhotoImportV2
         public string Message { get; set; }
         public int Processed { get; set; }
         public int Total { get; set; }
+        public long Bytes { get; set; }
+        public long TotalBytes { get; set; }
+    }
+    public class TransferProgress
+    {
+        public string Stage { get; set; }
+        public long Bytes { get; set; }
+        public long Total { get; set; }
+        public string UpdatedUtc { get; set; }
+    }
+    public class LocationAvailability
+    {
+        public DestinationRecord Destination { get; set; }
+        public bool Available { get; set; }
+        public string Detail { get; set; }
+        public long? FreeBytes { get; set; }
     }
     public static class JsonFile
     {

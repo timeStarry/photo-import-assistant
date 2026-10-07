@@ -62,6 +62,11 @@ namespace PhotoImportV2
 
         public static string Address(DestinationRecord destination)
         {
+            if (!String.IsNullOrWhiteSpace(destination.Type) && (destination.Type == "webdav" || destination.Type == "s3")) return StorageSettings.Normalize(destination).Path;
+            return LegacyAddress(destination);
+        }
+        public static string LegacyAddress(DestinationRecord destination)
+        {
             string path = destination.Path;
             if (!path.StartsWith(@"\\", StringComparison.Ordinal)) return path;
             string[] parts = path.Substring(2).Split('\\');
@@ -80,6 +85,7 @@ namespace PhotoImportV2
             if (destination == null) throw new ArgumentNullException("destination");
             // Never resolve a drive letter to its backing share: even N: remains local.
             // The transfer engine rejects local receipts when authorizing source deletion.
+            if (StorageSettings.IsDirect(destination)) return "remote";
             return NormalizePath(destination.Path).StartsWith(@"\\", StringComparison.Ordinal) ? "remote" : "local";
         }
 
@@ -89,7 +95,9 @@ namespace PhotoImportV2
             return new DestinationRecord
             {
                 Id = destination.Id, Name = destination.Name,
-                Path = destination.Path, Enabled = destination.Enabled
+                Path = destination.Path, Enabled = destination.Enabled, Type = destination.Type,
+                Endpoint = destination.Endpoint, Bucket = destination.Bucket, Region = destination.Region,
+                Prefix = destination.Prefix, CredentialTarget = destination.CredentialTarget
             };
         }
 
@@ -101,9 +109,7 @@ namespace PhotoImportV2
             foreach (DestinationRecord entry in state.Destinations)
             {
                 if (!entry.Enabled) continue;
-                DestinationRecord copy = Clone(entry);
-                copy.Name = NormalizeName(copy.Name);
-                copy.Path = NormalizePath(copy.Path);
+                DestinationRecord copy = StorageSettings.Normalize(entry);
                 result.Add(copy);
             }
             return result;
@@ -133,7 +139,7 @@ namespace PhotoImportV2
                 if (!Guid.TryParse(entry.Id, out id) || id == Guid.Empty || !ids.Add(id))
                     throw Invalid("目标位置的 ID 无效或重复。");
                 NormalizeName(entry.Name);
-                string canonical = NormalizePath(entry.Path);
+                string canonical = StorageSettings.Normalize(entry).Path;
                 if (!paths.Add(canonical)) throw Invalid("目标位置重复，请合并相同的文件夹。");
             }
             // Zero enabled destinations is valid configuration; the import UI handles it.

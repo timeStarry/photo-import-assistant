@@ -30,6 +30,8 @@ namespace PhotoImportV2
         string activeDestination = "";
         CancellationTokenSource cancellation;
         Task activeImport;
+        Task activeScan;
+        readonly List<Task> backgroundProbes = new List<Task>();
         string activeRoot;
         string lastOutcome = "本次会话尚无导入任务";
         DateTime lastScan = DateTime.MinValue;
@@ -66,6 +68,7 @@ namespace PhotoImportV2
             };
             view.StartupChanged = async delegate(bool enabled) { await ChangeStartup(enabled); };
             view.EditExclusions = delegate { EditExclusions(); };
+            view.EditTransferSettings = delegate { EditTransferSettings(); };
             view.Cancel = delegate { if (cancellation != null) cancellation.Cancel(); };
             view.Pause = delegate { TogglePause(); };
             view.OpenLogs = delegate { if (!preview) System.Diagnostics.Process.Start("explorer.exe", store.Root); };
@@ -196,7 +199,8 @@ namespace PhotoImportV2
             scanning = true; lastScan = DateTime.UtcNow; int generation = identityGeneration;
             try
             {
-                var found = await WorkerClient.Scan(store.Root);
+                var scan = WorkerClient.Scan(store.Root); activeScan = scan;
+                var found = await scan;
                 if (IsDisposed || exiting || generation != identityGeneration) return;
                 disks = found; handled.IntersectWith(disks.Select(Token));
                 foreach (string root in comparisons.Keys.Where(r => !disks.Any(d => d.Root.Equals(r, StringComparison.OrdinalIgnoreCase))).ToList()) comparisons.Remove(root);
@@ -205,7 +209,7 @@ namespace PhotoImportV2
                 if (!busy) status.Text = (paused ? "已暂停自动提示" : "监听中") + " · " + disks.Count + " 张卡片 · 最近扫描 " + DateTime.Now.ToString("HH:mm:ss");
             }
             catch (Exception ex) { WriteLog("扫描失败，将自动重试：" + ex.Message); status.Text = "监听仍在运行 · 扫描失败，可重新扫描"; }
-            finally { scanning = false; }
+            finally { scanning = false; activeScan = null; }
             if (busy || prompting || exiting) return;
             foreach (var disk in disks.ToList())
             {
@@ -296,6 +300,27 @@ namespace PhotoImportV2
             }
             finally { prompting = false; UpdateDetails(); }
         }
+        void EditTransferSettings()
+        {
+            if (prompting) return; prompting = true;
+            try
+            {
+                using (var dialog = new TransferSettingsDialog(store.State))
+                {
+                    if (dialog.ShowDialog(this) != DialogResult.OK) return;
+                    var old = new[] { store.State.MaxParallel, store.State.IdleTimeoutSeconds };
+                    bool? auto = store.State.AutoParallel; long? large = store.State.LargeFileBytes;
+                    try
+                    {
+                        store.State.MaxParallel = dialog.MaxParallel; store.State.IdleTimeoutSeconds = dialog.IdleTimeoutSeconds;
+                        store.State.AutoParallel = dialog.AutoParallel; store.State.LargeFileBytes = dialog.LargeFileBytes;
+                        StorageSettings.ValidateTransfer(store.State); store.Save();
+                    }
+                    catch (Exception ex) { store.State.MaxParallel = old[0]; store.State.IdleTimeoutSeconds = old[1]; store.State.AutoParallel = auto; store.State.LargeFileBytes = large; ShowSettingsError(ex); }
+                }
+            }
+            finally { prompting = false; UpdateDetails(); }
+        }
         void BindPlans()
         {
             foreach (var disk in disks)
@@ -319,7 +344,7 @@ namespace PhotoImportV2
             busy = true; activeRoot = disk.Root; cancellation = new CancellationTokenSource(); progress.Value = 0;
             status.Text = "正在对比目标内容…";
             var request = new WorkRequest { Operation = "plan", SourceRoot = disk.Root, CardId = disk.MarkerId,
-                ExpectedSerial = disk.Serial, ExpectedCapacity = disk.Capacity, CandidateFiles = disk.Media,
+                ExpectedSerial = disk.Serial, ExpectedCapacity = disk.Capacity, CandidateFiles = disk.Media, IdleTimeoutSeconds = StorageSettings.IdleSeconds(store.State),
                 ComparisonTargets = targets, ExcludedExtensions = MediaRules.NormalizeExcluded(store.State.ExcludedExtensions) };
             activeImport = CompareAsync(disk, signature, identityGeneration, request, cancellation.Token);
             await activeImport;
@@ -331,6 +356,7 @@ namespace PhotoImportV2
             {
                 var result = await WorkerClient.Run(request, store.Root, cancel, delegate(CandidateProgress p) {
                     status.Text = p.Message + (p.Total > 0 ? " · " + p.Processed + " / " + p.Total : "");
+                    if (p.TotalBytes > 0) status.Text += " · " + FluentView.SizeText(p.Bytes) + " / " + FluentView.SizeText(p.TotalBytes);
                     progress.Value = (int)(Math.Max(0, Math.Min(p.Processed, p.Total)) * 1000L / Math.Max(1, p.Total));
                 });
                 if (!result.Success || result.Plan == null) throw new IOException(result.Error ?? "目标对比没有返回结果。");
@@ -351,13 +377,22 @@ namespace PhotoImportV2
         }
         void EditLocation(DestinationRecord existing)
         {
-            if (prompting) return;
+            if (prompting || exiting) return;
+            if (backgroundProbes.Any(t => !t.IsCompleted)) { status.Text = "等待上次连接测试退出…"; return; }
             prompting = true;
+            var testCancellation = new CancellationTokenSource();
             try
             {
-                using (var dialog = new LocationDialog(existing))
+                using (var dialog = new LocationDialog(existing, async delegate(DestinationRecord d) {
+                    if (exiting) throw new OperationCanceledException("应用正在退出。");
+                    if (preview) return new WorkResult { Success = true, Detail = "界面预览 · 未连接真实位置" };
+                    var pending = WorkerClient.Run(new WorkRequest { Operation = "probe", DestinationRoot = d.Path, Target = d }, store.Root, testCancellation.Token);
+                    backgroundProbes.Add(pending);
+                    try { return await pending; } finally { backgroundProbes.Remove(pending); }
+                }))
                 {
                     if (dialog.ShowDialog(this) != DialogResult.OK) return;
+                    if (exiting) return;
                     SaveLocations(delegate {
                         if (existing == null) store.State.Destinations.Add(dialog.Destination);
                         else store.State.Destinations[store.State.Destinations.FindIndex(d => d.Id == existing.Id)] = dialog.Destination;
@@ -365,10 +400,11 @@ namespace PhotoImportV2
                     if (existing != null) view.LocationResults.Remove(existing.Id);
                 }
             }
-            finally { prompting = false; UpdateDetails(); }
+            finally { testCancellation.Cancel(); testCancellation.Dispose(); prompting = false; UpdateDetails(); }
         }
         async Task LocationAction(string action, string id)
         {
+            if (exiting) return;
             var destination = store.State.Destinations.FirstOrDefault(d => d.Id == id);
             if (destination == null) return;
             if (action == "edit") { EditLocation(destination); return; }
@@ -408,8 +444,8 @@ namespace PhotoImportV2
         {
             try
             {
-                var result = await WorkerClient.Run(new WorkRequest { Operation = "probe", DestinationRoot = destination.Path }, store.Root, cancel);
-                view.LocationResults[destination.Id] = result.Success ? "连接正常 · 可读写" : "连接失败 · " + result.Error;
+                var result = await WorkerClient.Run(new WorkRequest { Operation = "probe", DestinationRoot = destination.Path, Target = destination }, store.Root, cancel);
+                view.LocationResults[destination.Id] = result.Success ? (result.Detail ?? "读写校验通过") + " · " + DateTime.Now.ToString("HH:mm") : "连接失败 · " + result.Error;
             }
             catch (OperationCanceledException) { view.LocationResults[destination.Id] = "测试已取消"; }
             catch (Exception ex) { view.LocationResults[destination.Id] = "测试未完成 · " + ex.Message; }
@@ -417,13 +453,14 @@ namespace PhotoImportV2
         }
         async Task RegisterSelected()
         {
-            var disk = Selected; if (disk == null || busy || preview) return;
+            var disk = Selected; if (disk == null || busy || preview || exiting) return;
             prompting = true;
             try
             {
                 using (var dialog = new RegistrationDialog(store, disk))
                 {
                     if (dialog.ShowDialog(this) != DialogResult.OK) return;
+                    if (exiting) return;
                     var card = dialog.SelectedRecord;
                     bool isNew = card == null;
                     string id = isNew ? Guid.NewGuid().ToString("D").ToUpperInvariant() : card.Id;
@@ -488,21 +525,33 @@ namespace PhotoImportV2
             string confirmedSignature = comparison.Signature;
             int confirmedGeneration = identityGeneration;
             string failurePolicy = store.State.DestinationFailure;
+            var availability = new List<LocationAvailability>();
+            busy = true; activeRoot = disk.Root; cancellation = new CancellationTokenSource();
+            status.Text = "检查本次导入位置…"; progress.Value = 0; UpdateDetails();
+            try
+            {
+                activeImport = Preflight(targets, availability, cancellation.Token, files.Sum(f => f.Length));
+                await activeImport;
+            }
+            catch (Exception ex) { WriteLog("位置检查已停止：" + ex.Message); return; }
+            finally { busy = false; activeRoot = null; cancellation.Dispose(); cancellation = null; activeImport = null; UpdateDetails(); }
+            targets = availability.Where(a => a.Available).Select(a => a.Destination).ToList();
+            bool makeDefault = false;
             Reveal(); prompting = true;
             try
             {
-                if (manual || !card.AutoImport)
+                if (manual || !card.AutoImport || availability.Any(a => !a.Available))
                 {
-                    string message = card.Name + " · " + disk.Root.TrimEnd('\\') + "\r\n" + files.Count + " 个待导入文件 · " + FluentView.SizeText(files.Sum(m => m.Length)) + "\r\n保存到 " + targets[0].Name + "\r\n" + ImportSettings.Address(targets[0]);
-                    if (failurePolicy == "Next" && targets.Count > 1) message += "\r\n不可用时 → " + String.Join(" → ", targets.Skip(1).Select(t => t.Name));
-                    using (var dialog = new ChoiceDialog("导入这些文件？", message, "开始导入", "跳过", "以后自动导入此卡"))
+                    using (var dialog = new ImportDialog(card, disk, files, availability, failurePolicy))
                     {
                         if (dialog.ShowDialog(this) != DialogResult.Yes) return;
+                        targets = dialog.SelectedTargets.Select(ImportSettings.Clone).ToList(); makeDefault = dialog.MakeDefault;
                         if (dialog.Remember) { card.AutoImport = true; store.Save(); }
                     }
                 }
             }
             finally { prompting = false; }
+            if (targets.Count == 0) return;
             if (exiting || !PresentInLastScan(disk, card.Id)) return;
             var latest = disks.FirstOrDefault(d => d.Root == disk.Root);
             if (confirmedGeneration != identityGeneration || latest == null || latest.Error != null || latest.MarkerError != null ||
@@ -513,37 +562,75 @@ namespace PhotoImportV2
                 WriteLog("待导入内容或位置已变化，本次确认作废，请重新确认。");
                 Balloon("请重新确认导入", "待导入内容或位置已变化，尚未开始导入。"); UpdateDetails(); return;
             }
+            if (makeDefault)
+            {
+                var order = targets.Select(t => t.Id).ToList();
+                SaveLocations(delegate { store.State.Destinations = store.State.Destinations.OrderBy(d => order.Contains(d.Id) ? order.IndexOf(d.Id) : Int32.MaxValue).ToList(); });
+            }
             busy = true; fallbackActive = false; activeDestination = targets[0].Name; progress.Value = 0; activeRoot = disk.Root; cancellation = new CancellationTokenSource(); UpdateDetails();
             activeImport = ImportAsync(disk, card, files, targets, failurePolicy, cancellation.Token);
             await activeImport;
+        }
+        async Task Preflight(List<DestinationRecord> targets, List<LocationAvailability> availability, CancellationToken cancel, long requiredBytes)
+        {
+            // A small bounded connection check, not a write-test on card insertion.
+            for (int i = 0; i < targets.Count; i += 2)
+            {
+                var batch = targets.Skip(i).Take(2).Select(async delegate(DestinationRecord destination) {
+                    var result = await WorkerClient.Run(new WorkRequest { Operation = "probe", Target = destination, DestinationRoot = destination.Path, ReadOnlyProbe = true }, store.Root, cancel);
+                    if (result.Success && result.FreeBytes.HasValue && result.FreeBytes.Value < requiredBytes)
+                    { result.Success = false; result.Error = "空间不足 · 需要 " + FluentView.SizeText(requiredBytes) + "，可用 " + FluentView.SizeText(result.FreeBytes.Value); }
+                    return new LocationAvailability { Destination = destination, Available = result.Success, Detail = result.Success ? result.Detail ?? "可访问" : result.Error, FreeBytes = result.FreeBytes };
+                });
+                availability.AddRange(await Task.WhenAll(batch));
+            }
         }
         async Task ImportAsync(DiskSnapshot disk, CardRecord card, List<MediaItem> files, List<DestinationRecord> targets, string failurePolicy, CancellationToken cancel)
         {
             var receipts = new List<TransferReceipt>();
             string journal = Path.Combine(store.Root, "imports", DateTime.UtcNow.ToString("yyyyMMdd-HHmmss") + "-" + Guid.NewGuid().ToString("N") + ".json");
-            int destinationIndex = 0, failed = 0, deleted = 0;
+            int failed = 0, deleted = 0, completed = 0, running = 0, queued = files.Count;
+            long completedBytes = 0, totalBytes = files.Sum(f => f.Length);
+            int batchIdle = StorageSettings.IdleSeconds(store.State);
+            var current = new Dictionary<string, TransferProgress>(StringComparer.OrdinalIgnoreCase);
+            var currentTargets = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var samples = new Dictionary<string, Tuple<DateTime, long, string>>(StringComparer.OrdinalIgnoreCase);
             try
             {
-                int index = 0;
-                foreach (var file in files)
+                StorageSettings.ValidateTransfer(store.State);
+                await ImportScheduler.Run(files, StorageSettings.Parallel(store.State), StorageSettings.LargeBytes(store.State), store.State.AutoParallel != false, async delegate(MediaItem file)
                 {
                     cancel.ThrowIfCancellationRequested();
                     // This is only a quick UI hint; the isolated worker verifies and locks the real card.
                     if (!PresentInLastScan(disk, card.Id)) throw new IOException("存储卡已拔出或身份改变；本次传输已停止，监听继续运行。");
-                    status.Text = "导入 " + (++index) + " / " + files.Count + " · " + file.RelativePath;
+                    int destinationIndex = 0;
+                    current[file.SourcePath] = new TransferProgress { Stage = "连接", Total = file.Length };
                     WorkResult result;
                     while (true)
                     {
                         cancel.ThrowIfCancellationRequested();
                         var destination = targets[destinationIndex]; activeDestination = destination.Name; UpdateDetails();
+                        currentTargets[file.SourcePath] = destination.Name;
                         var request = new WorkRequest { Operation = "copy", SourceRoot = disk.Root, CardId = card.Id, ExpectedSerial = disk.Serial, ExpectedCapacity = disk.Capacity,
-                            File = file, DestinationRoot = destination.Path, DestinationKind = ImportSettings.Kind(destination) };
-                        result = await WorkerClient.Run(request, store.Root, cancel);
+                            File = file, DestinationRoot = destination.Path, DestinationKind = ImportSettings.Kind(destination), Target = destination, IdleTimeoutSeconds = batchIdle };
+                        result = await WorkerClient.Run(request, store.Root, cancel, null, delegate(TransferProgress p) {
+                            current[file.SourcePath] = p;
+                            Tuple<DateTime, long, string> before;
+                            double speed = 0; var now = DateTime.UtcNow;
+                            if (samples.TryGetValue(file.SourcePath, out before) && before.Item3 == p.Stage && p.Bytes >= before.Item2)
+                                speed = (p.Bytes - before.Item2) / Math.Max(.1, (now - before.Item1).TotalSeconds);
+                            if (!samples.ContainsKey(file.SourcePath) || before.Item3 != p.Stage || (now - before.Item1).TotalSeconds >= 1) samples[file.SourcePath] = Tuple.Create(now, p.Bytes, p.Stage);
+                            string rate = speed > 0 ? " · " + FluentView.SizeText((long)speed) + "/s · 约 " + Remaining((p.Total - p.Bytes) / speed) : "";
+                            status.Text = "已完成 " + completed + " / " + files.Count + " · 运行 " + running + " · 排队 " + queued + "\r\n" + String.Join("\r\n", current.OrderBy(pair => pair.Key).Select(pair => pair.Value.Stage + " · " + Path.GetFileName(pair.Key) + " · " + FluentView.SizeText(pair.Value.Bytes) + " / " + FluentView.SizeText(pair.Value.Total) + (pair.Key == file.SourcePath ? rate : "")));
+                            activeDestination = String.Join(" / ", currentTargets.Values.Distinct());
+                            double inFlight = current.Sum(pair => pair.Value.Total > 0 ? pair.Value.Total * Phase(pair.Value) : 0);
+                            progress.Value = (int)Math.Min(999, (completedBytes + inFlight) * 1000d / Math.Max(1, totalBytes));
+                        });
                         if (result.Success) break;
                         WriteLog(destination.Name + " 导入失败：" + result.Error);
                         if (!PresentInLastScan(disk, card.Id)) throw new IOException("存储卡已断开。");
                         int next = ImportSettings.NextIndex(destinationIndex, targets.Count, failurePolicy);
-                        if (next < 0) throw new IOException("保存位置不可用：" + destination.Name + "。 " + result.Error);
+                        if (next < 0) { failed++; WriteLog("保留原件：" + file.RelativePath + " · 所有已批准位置均未完成导入。"); current.Remove(file.SourcePath); currentTargets.Remove(file.SourcePath); return false; }
                         destinationIndex = next; fallbackActive = true; WriteLog("改用 " + targets[destinationIndex].Name);
                     }
                     if (result.Success && result.Receipt != null)
@@ -552,8 +639,9 @@ namespace PhotoImportV2
                         WriteLog((result.ReusedExisting ? "已校验相同副本 " : "已复制并校验 ") + file.RelativePath + " → " + result.Receipt.DestinationPath);
                     }
                     else { failed++; WriteLog("保留原件，传输失败：" + file.RelativePath + " · " + result.Error); }
-                    progress.Value = (int)(index * 1000L / Math.Max(1, files.Count));
-                }
+                    current.Remove(file.SourcePath); currentTargets.Remove(file.SourcePath); completedBytes += file.Length;
+                    return result.Success;
+                }, delegate(int done, int active, int waiting) { completed = done; running = active; queued = waiting; }, cancel, delegate { cancellation.Cancel(); }, true);
                 cancel.ThrowIfCancellationRequested();
                 var remote = receipts.Where(r => r.DestinationKind == "remote").ToList();
                 int local = receipts.Count - remote.Count;
@@ -562,7 +650,7 @@ namespace PhotoImportV2
                 bool remove = remote.Count > 0 && card.DeleteMode == "Auto";
                 if (remote.Count > 0 && card.DeleteMode != "Keep" && card.DeleteMode != "Auto")
                 {
-                    using (var dialog = new ChoiceDialog("清理卡内原件？", summary + "\r\n可清理 " + remote.Count + " 个已上传原件。" + (local > 0 ? "\r\n" + local + " 个本地副本对应的原件会保留。" : ""), "清理原件", "保留", "记住本次选择"))
+                    using (var dialog = new ChoiceDialog("清理卡内原件？", summary + "\r\n可清理 " + remote.Count + " 个已上传原件。" + (local > 0 ? "\r\n" + local + " 个副本不满足锁定清理条件，原件保留。" : ""), "清理原件", "保留", "记住本次选择"))
                     {
                         var choice = dialog.ShowDialog(this); remove = choice == DialogResult.Yes;
                         if (dialog.Remember && (choice == DialogResult.Yes || choice == DialogResult.No)) { card.DeleteMode = remove ? "Auto" : "Keep"; store.Save(); }
@@ -586,12 +674,22 @@ namespace PhotoImportV2
             catch (Exception ex) { lastOutcome = "导入停止 · 已完成 " + receipts.Count + " 个。" + ex.Message; status.Text = lastOutcome; WriteLog("任务错误：" + ex.Message); Balloon("导入停止", ex.Message); }
             finally { comparisons.Remove(disk.Root); BindPlans(); busy = false; activeRoot = null; cancellation.Dispose(); cancellation = null; UpdateDetails(); lastScan = DateTime.MinValue; }
         }
+        static double Phase(TransferProgress p)
+        {
+            double ratio = p.Total > 0 ? Math.Min(1, p.Bytes / (double)p.Total) : 0;
+            return p.Stage == "校验" ? .75 + .25 * ratio : p.Stage == "读取" ? .2 * ratio : p.Stage == "上传" ? .75 * ratio : p.Stage == "复制" ? .2 + .55 * ratio : 0;
+        }
+        static string Remaining(double seconds)
+        { return seconds >= 3600 ? Math.Ceiling(seconds / 3600) + " 小时" : seconds >= 60 ? Math.Ceiling(seconds / 60) + " 分钟" : Math.Ceiling(Math.Max(0, seconds)) + " 秒"; }
         async Task ExitAsync()
         {
             if (exiting) return;
+            if (prompting) { Balloon("请先关闭对话框", "关闭当前对话框后可退出；连接测试会随之取消。"); return; }
             exiting = true; timer.Stop();
             if (cancellation != null) cancellation.Cancel();
-            if (activeImport != null) await activeImport;
+            try { if (activeImport != null) await activeImport; } catch (Exception ex) { WriteLog("退出时任务已停止：" + ex.Message); }
+            try { await Task.WhenAll(backgroundProbes.ToArray()); } catch (Exception ex) { WriteLog("连接测试已停止：" + ex.Message); }
+            try { if (activeScan != null) await activeScan; } catch (Exception ex) { WriteLog("退出时扫描已停止：" + ex.Message); }
             if (WorkerClient.HasUnconfirmedWorker)
             {
                 exiting = false; timer.Start(); MessageBox.Show(this, "还有未确认退出的工作进程，请暂勿拔卡。等待进程结束后再退出。", "暂时无法退出", MessageBoxButtons.OK, MessageBoxIcon.Warning); return;

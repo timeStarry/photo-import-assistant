@@ -35,6 +35,8 @@ jobs:
           name: windows-synthetic-checks
           path: |
             artifacts/synthetic-*/self-test.txt
+            artifacts/synthetic-*/webdav-test.txt
+            artifacts/synthetic-*/s3-test.txt
             artifacts/synthetic-*/previews/render-check.txt
             artifacts/synthetic-*/previews/*.png
           if-no-files-found: warn

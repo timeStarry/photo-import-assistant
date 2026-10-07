@@ -11,6 +11,33 @@ namespace PhotoImportV2
         [STAThread]
         static int Main(string[] args)
         {
+            if (args.Length == 4 && args[0] == "--test-location")
+            {
+                try
+                {
+                    var state = JsonFile.Read<AppState>(args[1]);
+                    var destination = ImportSettings.Ordered(state).Find(d => d.Id == args[2]);
+                    if (destination == null) throw new ArgumentException("位置不存在或已停用。");
+                    var result = DestinationProbe.Run(new WorkRequest { Operation = "probe", Target = destination, DestinationRoot = destination.Path });
+                    JsonFile.Write(args[3], result); return result.Success ? 0 : 1;
+                }
+                catch (Exception ex) { JsonFile.Write(args[3], new WorkResult { Error = ex.Message }); return 1; }
+            }
+            if (args.Length == 3 && args[0] == "--check-locations")
+            {
+                try
+                {
+                    var state = JsonFile.Read<AppState>(args[1]);
+                    var results = new System.Collections.Generic.List<LocationAvailability>();
+                    foreach (var destination in ImportSettings.Ordered(state))
+                    {
+                        var result = DestinationProbe.Run(new WorkRequest { Operation = "probe", Target = destination, DestinationRoot = destination.Path, ReadOnlyProbe = true });
+                        results.Add(new LocationAvailability { Destination = destination, Available = result.Success, Detail = result.Success ? result.Detail : result.Error });
+                    }
+                    JsonFile.Write(args[2], results); return 0;
+                }
+                catch (Exception ex) { JsonFile.Write(args[2], new WorkResult { Error = ex.Message }); return 1; }
+            }
             if (args.Length == 2 && args[0] == "--export-icon")
             {
                 using (var icon = AppIcon.Create()) using (var stream = new FileStream(args[1], FileMode.Create)) icon.Save(stream);
@@ -38,21 +65,30 @@ namespace PhotoImportV2
                 try
                 {
                     var request = JsonFile.Read<WorkRequest>(args[1]);
-                    if (request.Operation == "plan" && (String.IsNullOrEmpty(request.ProgressPath) ||
+                    if ((request.Operation == "plan" || request.ProgressPath != null) && (String.IsNullOrEmpty(request.ProgressPath) ||
                         !TransferPaths.Same(Path.GetDirectoryName(Path.GetFullPath(args[1])), Path.GetDirectoryName(Path.GetFullPath(request.ProgressPath)))))
                         throw new IOException("Comparison progress must remain in the worker job directory.");
-                    JsonFile.Write(args[2], request.Operation == "register" ? RegistrationWorker.Run(request) : request.Operation == "probe" ? DestinationProbe.Run(request) :
-                        request.Operation == "plan" ? CandidatePlanner.Run(request, delegate(CandidateProgress p) { JsonFile.Write(request.ProgressPath, p); }) : TransferEngine.Run(request));
+                    var progressWatch = Stopwatch.StartNew(); string lastStage = null;
+                    Action<TransferProgress> update = delegate(TransferProgress p) {
+                        if (request.ProgressPath == null) return;
+                        if (p.Stage != lastStage || p.Bytes == p.Total || progressWatch.ElapsedMilliseconds >= 500)
+                        { JsonFile.Write(request.ProgressPath, p); lastStage = p.Stage; progressWatch.Restart(); }
+                    };
+                    WorkResult result = request.Operation == "register" ? RegistrationWorker.Run(request) : request.Operation == "probe" ? DestinationProbe.Run(request) :
+                        request.Operation == "plan" ? CandidatePlanner.Run(request, delegate(CandidateProgress p) { JsonFile.Write(request.ProgressPath, p); }) :
+                        request.Operation == "copy" && request.Target != null && StorageSettings.IsDirect(request.Target) ? RemoteTransferEngine.Run(request, update) : TransferEngine.Run(request, update);
+                    JsonFile.Write(args[2], result);
                     return 0;
                 }
                 catch (Exception ex) { try { JsonFile.Write(args[2], new WorkResult { Error = ex.ToString() }); } catch { } return 1; }
             }
-            if (args.Length > 0 && args[0] == "--self-test")
+            if (args.Length > 0 && (args[0] == "--self-test" || args[0] == "--self-test-webdav" || args[0] == "--self-test-s3"))
             {
                 try
                 {
-                    string result = TransferEngineTests.Run() + Environment.NewLine + ConfigurationTests.Run() + Environment.NewLine +
-                        MediaRulesTests.Run() + Environment.NewLine + CandidatePlannerTests.Run() + Environment.NewLine + CandidateWorkerTests.Run();
+                    string result = args[0] == "--self-test-webdav" ? WebDavStoreTests.Run() : args[0] == "--self-test-s3" ? S3StoreTests.Run() : TransferEngineTests.Run() + Environment.NewLine + ConfigurationTests.Run() + Environment.NewLine +
+                        MediaRulesTests.Run() + Environment.NewLine + CandidatePlannerTests.Run() + Environment.NewLine + CandidateWorkerTests.Run() + Environment.NewLine +
+                        TransferPipelineTests.Run();
                     if (args.Length > 1) File.WriteAllText(args[1], result);
                     return 0;
                 }

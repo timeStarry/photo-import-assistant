@@ -69,18 +69,15 @@ namespace PhotoImportV2
                 try { if (File.Exists(output)) File.Delete(output); } catch { }
             }
         }
-        public static async Task<WorkResult> Run(WorkRequest request, string stateRoot, CancellationToken cancel, Action<CandidateProgress> progress = null)
+        public static async Task<WorkResult> Run(WorkRequest request, string stateRoot, CancellationToken cancel, Action<CandidateProgress> progress = null, Action<TransferProgress> transferProgress = null)
         {
             if (HasUnconfirmedWorker) throw new IOException("等待上次工作进程退出，暂不启动新操作。");
             string folder = Path.Combine(stateRoot, "jobs", Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(folder);
             string input = Path.Combine(folder, "request.json"), output = Path.Combine(folder, "result.json");
-            if (request.Operation == "plan") request.ProgressPath = Path.Combine(folder, "progress.json");
+            if (request.Operation == "plan" || request.Operation == "copy" || request.Operation == "delete") request.ProgressPath = Path.Combine(folder, "progress.json");
             JsonFile.Write(input, request);
-            long length = request.File != null ? request.File.Length : request.Receipt != null ? request.Receipt.Length : 0;
-            if (request.Operation == "plan" && request.CandidateFiles != null)
-                foreach (var file in request.CandidateFiles) length = Math.Min(Int64.MaxValue / 2, length + Math.Min(Int64.MaxValue / 2, Math.Max(0, file.Length)));
-            int seconds = request.Operation == "register" || request.Operation == "probe" ? 30 : (int)Math.Min(1800, 90 + length / (256 * 1024));
+            int seconds = request.Operation == "register" || request.Operation == "probe" ? 30 : request.IdleTimeoutSeconds > 0 ? Math.Max(30, Math.Min(1800, request.IdleTimeoutSeconds)) : 180;
             Process process = null;
             try
             {
@@ -90,15 +87,31 @@ namespace PhotoImportV2
                 { UseShellExecute = false, CreateNoWindow = true, WindowStyle = ProcessWindowStyle.Hidden });
                 lock (Children) Children.Add(process);
                 var watch = Stopwatch.StartNew();
+                string lastSignal = null;
                 while (!process.HasExited)
                 {
                     cancel.ThrowIfCancellationRequested();
-                    if (watch.Elapsed.TotalSeconds > seconds) throw new TimeoutException("连接或传输超时；已终止本次文件操作。");
-                    if (progress != null && request.Operation == "plan" && File.Exists(request.ProgressPath))
+                    if (watch.Elapsed.TotalSeconds > seconds) throw new TimeoutException("持续 " + seconds + " 秒没有传输进展；已停止本次操作，原件保留。");
+                    if (request.ProgressPath != null && File.Exists(request.ProgressPath))
                     {
-                        CandidateProgress value = null;
-                        try { value = JsonFile.Read<CandidateProgress>(request.ProgressPath); } catch (IOException) { }
-                        if (value != null) progress(value);
+                        try
+                        {
+                            string signal;
+                            if (request.Operation == "plan")
+                            {
+                                var value = JsonFile.Read<CandidateProgress>(request.ProgressPath);
+                                signal = value.Message + "|" + value.Processed + "|" + value.Bytes;
+                                if (progress != null) progress(value);
+                            }
+                            else
+                            {
+                                var value = JsonFile.Read<TransferProgress>(request.ProgressPath);
+                                signal = value.Stage + "|" + value.Bytes;
+                                if (transferProgress != null) transferProgress(value);
+                            }
+                            if (lastSignal != signal) { lastSignal = signal; watch.Restart(); }
+                        }
+                        catch (IOException) { }
                     }
                     await Task.Delay(150, cancel);
                 }

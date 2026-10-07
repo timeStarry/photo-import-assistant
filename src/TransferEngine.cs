@@ -30,10 +30,18 @@ namespace PhotoImportV2
     {
         private const int BufferSize = 65536;
         private const int CandidateLimit = 32;
+        [ThreadStatic] static Action<TransferProgress> transferProgress;
+        [ThreadStatic] static string transferStage;
 
         public static WorkResult Run(WorkRequest request)
         {
             return Run(request, TransferNative.RenameWithoutReplace, File.Move, false);
+        }
+        public static WorkResult Run(WorkRequest request, Action<TransferProgress> progress)
+        {
+            transferProgress = progress; transferStage = "读取";
+            try { return Run(request); }
+            finally { transferProgress = null; transferStage = null; }
         }
 
         // Per-call injection permits deterministic local fixtures for the WebClient failure
@@ -77,7 +85,9 @@ namespace PhotoImportV2
             using (var input = TransferNative.OpenRead(source, false))
             {
                 CheckSnapshot(input, work.File.Length, work.File.WriteTicks);
+                transferStage = "读取";
                 string hash = Hash(input, work.File.Length);
+                transferStage = "校验";
                 using (var destinationDirectories = new TransferDirectories(Path.GetDirectoryName(destination), true))
                 {
                     OwnedPartial partial = null;
@@ -293,6 +303,7 @@ namespace PhotoImportV2
                 Require(count > 0, "Source ended before its snapshot length.");
                 output.Write(buffer, 0, count);
                 remaining -= count;
+                RemoteTransferEngine.Report(transferProgress, "复制", length - remaining, length);
             }
             Require(input.ReadByte() == -1, "Source grew beyond its snapshot length.");
         }
@@ -301,6 +312,7 @@ namespace PhotoImportV2
         {
             Require(length >= 0 && stream.Length == length, "File length does not match the verified snapshot.");
             stream.Position = 0;
+            if (transferProgress != null) return RemoteTransferEngine.Hash(stream, length, transferStage ?? "校验", transferProgress);
             byte[] buffer = new byte[BufferSize];
             using (SHA256 sha = SHA256.Create())
             {

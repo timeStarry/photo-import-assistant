@@ -42,7 +42,7 @@ Write-Host ('Synthetic test artifacts: {0}' -f $runFolder)
 
 function Invoke-SyntheticCheck {
     param(
-        [ValidateSet('--self-test', '--render-previews')]
+        [ValidateSet('--self-test', '--self-test-webdav', '--self-test-s3', '--render-previews')]
         [string]$Switch,
         [string]$TargetPath,
         [string]$ReportPath,
@@ -98,7 +98,11 @@ function Invoke-SyntheticCheck {
 }
 
 $selfTestReport = Join-Path $runFolder 'self-test.txt'
-Invoke-SyntheticCheck -Switch '--self-test' -TargetPath $selfTestReport -ReportPath $selfTestReport -ExpectedPassLines 5
+Invoke-SyntheticCheck -Switch '--self-test' -TargetPath $selfTestReport -ReportPath $selfTestReport -ExpectedPassLines 6
+$davReport = Join-Path $runFolder 'webdav-test.txt'
+Invoke-SyntheticCheck -Switch '--self-test-webdav' -TargetPath $davReport -ReportPath $davReport -ExpectedPassLines 1
+$s3Report = Join-Path $runFolder 's3-test.txt'
+Invoke-SyntheticCheck -Switch '--self-test-s3' -TargetPath $s3Report -ReportPath $s3Report -ExpectedPassLines 1
 $renderReport = Join-Path $previewFolder 'render-check.txt'
 Invoke-SyntheticCheck -Switch '--render-previews' -TargetPath $previewFolder -ReportPath $renderReport -ExpectedPassLines 1
 $renderedFiles = @(Get-ChildItem -LiteralPath $previewFolder -Filter '*.png' -File)

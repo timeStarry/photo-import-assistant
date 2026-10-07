@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Windows;
+using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Markup;
 using System.Windows.Media;
@@ -19,6 +20,7 @@ namespace PhotoImportV2
         string activePage = "import", lastLog, pickerSignature, cardsSignature, locationsSignature;
         Action primary;
         public Action Register, Import, Preferences, Rescan, Cancel, Pause, OpenLogs, ChromeChanged, AddLocation, EditExclusions;
+        public Action EditTransferSettings;
         public Action<string> SelectCard, ThemeChanged, FailureChanged;
         public Action<bool> StartupChanged, NewCardPromptChanged;
         public Action<string, string> LocationAction, CardAction;
@@ -43,6 +45,7 @@ namespace PhotoImportV2
             Connect("ManageLocationsButton", delegate { ShowPage("locations"); });
             Connect("AddLocationButton", delegate { if (AddLocation != null) AddLocation(); });
             Connect("ExclusionsButton", delegate { if (EditExclusions != null) EditExclusions(); });
+            Connect("TransferSettingsButton", delegate { if (EditTransferSettings != null) EditTransferSettings(); });
             Get<ComboBox>("CardPicker").SelectionChanged += delegate {
                 if (!refreshing && SelectCard != null) { var item = Get<ComboBox>("CardPicker").SelectedItem as PickerItem; if (item != null) SelectCard(item.Root); }
             };
@@ -68,6 +71,7 @@ namespace PhotoImportV2
         internal string PrimaryCaption { get { return (string)Get<Button>("PrimaryAction").Content; } }
         internal bool PrimaryEnabled { get { return Get<Button>("PrimaryAction").IsEnabled; } }
         internal string PhotoCaption { get { return Get<TextBlock>("PhotoCount").Text; } }
+        internal string ConcurrencyCaption { get { return Get<TextBlock>("ConcurrencySummary").Text; } }
         void Connect(string name, Action action) { Get<Button>(name).Click += delegate { action(); }; }
         void SystemThemeChanged(object sender, UserPreferenceChangedEventArgs e) { Dispatcher.BeginInvoke(new Action(ApplyTheme)); }
         void ApplyTheme()
@@ -110,6 +114,7 @@ namespace PhotoImportV2
             refreshing = true;
             try
             {
+                status = status ?? "";
                 ImportSettings.Normalize(state);
                 if (!themeLoaded)
                 {
@@ -172,6 +177,7 @@ namespace PhotoImportV2
                 Get<ProgressBar>("TransferProgress").Value = progress; Get<ProgressBar>("TransferProgress").IsIndeterminate = busy && (progress == 0 || status.Contains("登记") || status.Contains("测试") || status.Contains("清理"));
                 Get<Border>("OutcomeCard").Visibility = String.IsNullOrEmpty(outcome) || outcome == "本次会话尚无导入任务" || busy ? Visibility.Collapsed : Visibility.Visible; Get<TextBlock>("OutcomeText").Text = outcome;
                 Get<TextBlock>("DestinationName").Text = targets.Count == 0 ? "未设置位置" : targets[0].Name;
+                Get<TextBlock>("DestinationType").Text = targets.Count == 0 ? "" : StorageSettings.TypeName(targets[0]);
                 Get<TextBlock>("DestinationPath").Text = targets.Count == 0 ? "" : ImportSettings.Address(targets[0]);
                 string fallbackText = state.DestinationFailure == "Stop" ? "不可用时停止导入" : targets.Count > 1 ? "不可用时 → " + String.Join(" → ", targets.Skip(1).Select(d => d.Name)) : "";
                 Get<TextBlock>("FallbackSummary").Text = fallbackText; Get<TextBlock>("FallbackSummary").Visibility = fallbackText.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
@@ -182,6 +188,8 @@ namespace PhotoImportV2
                 Get<CheckBox>("NewCardsCheck").IsChecked = state.PromptForNewCards != false;
                 Get<ComboBox>("FailurePicker").SelectedIndex = state.DestinationFailure == "Stop" ? 1 : 0; Get<TextBlock>("NextBatchNote").Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
                 Get<TextBlock>("ExclusionsSummary").Text = "照片和视频" + (state.ExcludedExtensions.Count > 0 ? " · 排除 " + String.Join(", ", state.ExcludedExtensions) : "");
+                Get<TextBlock>("ConcurrencySummary").Text = (state.AutoParallel != false ? "自动 · 从 1 路开始，最多 " : "固定 · 同时 ") + StorageSettings.Parallel(state) + " 个文件";
+                Get<TextBlock>("TransferSettingsSummary").Text = "无进展超时 " + StorageSettings.IdleSeconds(state) + " 秒 · 大文件 ≥ " + (StorageSettings.LargeBytes(state) / (1024d * 1024)).ToString("0.##") + " MiB";
                 RenderLocations(state, busy); RenderRegisteredCards(state, disks, busy);
                 if (lastLog != activity)
                 {
@@ -208,7 +216,7 @@ namespace PhotoImportV2
         }
         void RenderLocations(AppState state, bool busy)
         {
-            string sig = String.Join("|", state.Destinations.Select(d => d.Id + d.Name + d.Path + d.Enabled)) + String.Join("|", LocationResults.Select(p => p.Key + p.Value)) + busy;
+            string sig = String.Join("|", state.Destinations.Select(d => d.Id + d.Name + d.Path + d.Enabled + d.Type + d.Endpoint + d.Bucket + d.Region + d.Prefix + d.CredentialTarget)) + String.Join("|", LocationResults.Select(p => p.Key + p.Value)) + busy;
             if (sig == locationsSignature) return; locationsSignature = sig;
             var panel = Get<StackPanel>("LocationsList"); panel.Children.Clear(); int priority = 0;
             for (int i = 0; i < state.Destinations.Count; i++)
@@ -219,14 +227,19 @@ namespace PhotoImportV2
                 string rank = !destination.Enabled ? "停用" : ++priority == 1 ? "首选" : "备用 " + (priority - 1);
                 var title = Text(destination.Name + "  ·  " + rank, false); title.FontWeight = FontWeights.SemiBold; header.Children.Add(title);
                 var check = new CheckBox { Content = "启用", IsChecked = destination.Enabled, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(16, 0, 0, 0) };
+                AutomationProperties.SetName(check, "启用 " + destination.Name); AutomationProperties.SetAutomationId(check, "Locations.Enabled." + id);
                 Grid.SetColumn(check, 1); header.Children.Add(check); check.Click += delegate { if (LocationAction != null) LocationAction("toggle", id); };
-                body.Children.Add(header); var path = Text(ImportSettings.Address(destination), true); path.Margin = new Thickness(0, 6, 0, 0); body.Children.Add(path);
+                body.Children.Add(header);
+                var provider = Text(StorageSettings.TypeName(destination), true); provider.Margin = new Thickness(0, 6, 0, 0); body.Children.Add(provider);
+                var path = Text(ImportSettings.Address(destination), true); path.Margin = new Thickness(0, 4, 0, 0); body.Children.Add(path);
                 string result; if (LocationResults.TryGetValue(id, out result)) { var note = Text(result, true); note.Margin = new Thickness(0, 8, 0, 0); body.Children.Add(note); }
                 var actions = new WrapPanel { Margin = new Thickness(-10, 14, 0, 0) };
                 foreach (string verb in new[] { "edit", "test", "up", "down", "remove" })
                 {
                     string action = verb; string label = verb == "edit" ? "编辑" : verb == "test" ? "测试连接" : verb == "up" ? "上移" : verb == "down" ? "下移" : "移除";
-                    actions.Children.Add(Button(label, delegate { if (LocationAction != null) LocationAction(action, id); }, verb == "up" ? index > 0 : verb == "down" ? index < state.Destinations.Count - 1 : verb == "test" ? !busy : result != "正在测试…"));
+                    var actionButton = Button(label, delegate { if (LocationAction != null) LocationAction(action, id); }, verb == "up" ? index > 0 : verb == "down" ? index < state.Destinations.Count - 1 : verb == "test" ? !busy : result != "正在测试…");
+                    AutomationProperties.SetName(actionButton, destination.Name + "，" + label); AutomationProperties.SetAutomationId(actionButton, "Locations." + verb + "." + id);
+                    actions.Children.Add(actionButton);
                 }
                 body.Children.Add(actions); panel.Children.Add(Card(body));
             }
@@ -251,6 +264,10 @@ namespace PhotoImportV2
                 var body = new StackPanel(); var name = Text(record.Name, false); name.FontWeight = FontWeights.SemiBold; body.Children.Add(name);
                 body.Children.Add(Text(MainWindow.Capacity(record.Capacity) + " · " + (disk != null ? disk.Root.TrimEnd('\\') + " · 已连接" : record.NeedsBinding ? "需重新关联" : "未连接"), true));
                 var prefs = Text((record.AutoImport ? "自动导入" : "导入前询问") + " · " + (record.DeleteMode == "Auto" ? "自动清理原件" : record.DeleteMode == "Keep" ? "保留原件" : "清理前询问"), true); prefs.Margin = new Thickness(0, 8, 0, 0); body.Children.Add(prefs);
+                if (record.DeleteMode != "Keep")
+                {
+                    var retained = Text("本地、WebDAV 和 S3 副本保留卡内原件", true); retained.Margin = new Thickness(0, 6, 0, 0); body.Children.Add(retained);
+                }
                 var row = new WrapPanel { Margin = new Thickness(-10, 12, 0, 0) };
                 row.Children.Add(Button("卡片设置", delegate { if (CardAction != null) CardAction("preferences", id); }, !busy));
                 if (disk != null) { string root = disk.Root; row.Children.Add(Button("查看", delegate { if (SelectCard != null) SelectCard(root); ShowPage("import"); }, !busy)); }

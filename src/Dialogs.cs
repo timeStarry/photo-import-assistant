@@ -179,6 +179,8 @@ namespace PhotoImportV2
             mode.SelectedIndex = card.DeleteMode == "Keep" ? 1 : card.DeleteMode == "Auto" ? 2 : 0;
             surface.Body.Children.Add(DialogSurface.Field("原件处理(_D)", mode, 20));
             surface.Body.Children.Add(mode);
+            TextBlock retention = DialogSurface.Text("本地、WebDAV 和 S3 副本保留卡内原件；清理设置仅适用于可锁定校验的 SMB 副本。", "Caption");
+            retention.Margin = new Thickness(0, 10, 0, 0); surface.Body.Children.Add(retention);
             TextBlock warning = DialogSurface.Text("将自动删除已校验的卡内原件，删除后无法撤销。", "Caption");
             warning.Margin = new Thickness(0, 10, 0, 0);
             warning.SetResourceReference(TextBlock.ForegroundProperty, "DangerBrush");

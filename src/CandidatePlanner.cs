@@ -15,6 +15,7 @@ namespace PhotoImportV2
             internal string Path;
             internal long Length, WriteTicks;
             internal string Hash;
+            internal IRemoteStore Remote;
         }
 
         public static string Signature(DiskSnapshot disk, AppState state)
@@ -24,7 +25,7 @@ namespace PhotoImportV2
             add(disk.Key); add(disk.MarkerId);
             foreach (var file in disk.Media.OrderBy(f => f.SourcePath, StringComparer.OrdinalIgnoreCase))
             { add(file.SourcePath); add(file.RelativePath); add(file.Length.ToString()); add(file.WriteTicks.ToString()); }
-            foreach (var target in ImportSettings.Ordered(state)) { add(target.Id); add(target.Path); }
+            foreach (var target in ImportSettings.Ordered(state)) { add(target.Id); add(StorageSettings.Key(target)); }
             foreach (string extension in MediaRules.NormalizeExcluded(state.ExcludedExtensions)) add(extension);
             using (var hash = SHA256.Create()) return Convert.ToBase64String(hash.ComputeHash(Encoding.UTF8.GetBytes(text.ToString())));
         }
@@ -51,7 +52,27 @@ namespace PhotoImportV2
                 {
                     foreach (var destination in targets)
                     {
-                        string folder = ImportSettings.ValidateDestination(destination.Name, destination.Path).Path;
+                        if (StorageSettings.IsDirect(destination))
+                        {
+                            Report(progress, "读取目标目录 · " + destination.Name, 0, eligible.Count);
+                            try
+                            {
+                                var remote = RemoteStores.Create(destination, request.IdleTimeoutSeconds);
+                                foreach (var item in remote.List())
+                                {
+                                    if (!lengths.Contains(item.Length) || !MediaRules.IsSupported(item.Path) || TransferPaths.IsPartial(item.Path)) continue;
+                                    StorageSettings.Relative(item.Path, false);
+                                    if (!seen.Add(StorageSettings.Key(destination) + "|" + item.Path)) continue;
+                                    if (seen.Count > 100000) throw new IOException("Target inventory exceeds 100,000 comparable files.");
+                                    List<Target> list;
+                                    if (!inventory.TryGetValue(item.Length, out list)) inventory[item.Length] = list = new List<Target>();
+                                    list.Add(new Target { Path = item.Path, Length = item.Length, Remote = remote });
+                                }
+                            }
+                            catch (Exception error) { plan.Warnings.Add(destination.Name + "：目标对比不完整（" + error.Message + "）"); }
+                            continue;
+                        }
+                        string folder = StorageSettings.Normalize(destination).Path;
                         // Do not index the source card, or a folder enclosing it.
                         if (TransferPaths.Same(root, folder) || TransferPaths.Child(root, folder) || TransferPaths.Child(folder, root))
                             throw new IOException("Comparison target overlaps the source card.");
@@ -75,7 +96,8 @@ namespace PhotoImportV2
                             List<Target> candidates;
                             if (inventory.TryGetValue(file.Length, out candidates) && candidates.Count > 0)
                             {
-                                string sourceHash = TransferEngine.Hash(input, file.Length);
+                                input.Position = 0;
+                                string sourceHash = CompareHash(input, file.Length, file.RelativePath, processed, eligible.Count, progress);
                                 // Prefer the usual filename; renamed/hash-suffixed copies are also indexed.
                                 foreach (var target in candidates.OrderBy(t => Path.GetFileName(t.Path).Equals(Path.GetFileName(source), StringComparison.OrdinalIgnoreCase) ? 0 : 1))
                                 {
@@ -84,12 +106,23 @@ namespace PhotoImportV2
                                         // A cached non-match can only cause a conservative extra candidate.
                                         // Every positive match is freshly reopened and rehashed, even in this run.
                                         if (target.Hash != null && target.Hash != sourceHash) continue;
+                                        if (target.Remote != null)
+                                        {
+                                            var before = target.Remote.Stat(target.Path);
+                                            if (before == null || before.Length != file.Length) throw new IOException("Target changed during comparison.");
+                                            using (var remoteInput = target.Remote.OpenRead(target.Path)) target.Hash = CompareHash(remoteInput, file.Length, file.RelativePath, processed, eligible.Count, progress);
+                                            var after = target.Remote.Stat(target.Path);
+                                            if (after == null || after.Length != before.Length || (before.ETag != null && before.ETag != after.ETag)) throw new IOException("Target changed during comparison.");
+                                            if (target.Hash == sourceHash) { match = true; break; }
+                                            continue;
+                                        }
                                         using (var targetDirectories = new TransferDirectories(Path.GetDirectoryName(target.Path), false))
                                         using (var existing = TransferNative.OpenRead(target.Path, false))
                                         {
                                             TransferEngine.Require(!TransferNative.SameFile(input, existing), "Comparison target aliases the source.");
                                             TransferEngine.CheckSnapshot(existing, target.Length, target.WriteTicks);
-                                            target.Hash = TransferEngine.Hash(existing, target.Length);
+                                            existing.Position = 0;
+                                            target.Hash = CompareHash(existing, target.Length, file.RelativePath, processed, eligible.Count, progress);
                                             TransferEngine.CheckSnapshot(existing, target.Length, target.WriteTicks);
                                             if (target.Hash == sourceHash) { match = true; break; }
                                         }
@@ -113,6 +146,14 @@ namespace PhotoImportV2
 
         static void Report(Action<CandidateProgress> callback, string message, int processed, int total)
         { if (callback != null) callback(new CandidateProgress { Message = message, Processed = processed, Total = total }); }
+        static string CompareHash(Stream input, long length, string path, int processed, int total, Action<CandidateProgress> progress)
+        {
+            var watch = System.Diagnostics.Stopwatch.StartNew();
+            return RemoteTransferEngine.Hash(input, length, "对比内容", delegate(TransferProgress p) {
+                if (progress != null && (p.Bytes == 0 || p.Bytes == p.Total || watch.ElapsedMilliseconds >= 500))
+                { progress(new CandidateProgress { Message = "对比内容 · " + path, Processed = processed, Total = total, Bytes = p.Bytes, TotalBytes = p.Total }); watch.Restart(); }
+            });
+        }
 
         static void Enumerate(string directory, HashSet<long> lengths, Dictionary<long, List<Target>> inventory,
             HashSet<string> seen, int depth)
