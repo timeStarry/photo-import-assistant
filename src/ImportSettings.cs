@@ -127,6 +127,7 @@ namespace PhotoImportV2
         public static void ValidateConfig(AppState state)
         {
             if (state == null) throw new ArgumentNullException("state");
+            OrganizationSettings.Normalize(state.Organization);
             if (state.Destinations == null) throw Invalid("目标位置配置缺失，请先初始化设置。");
             if (state.DestinationFailure != "Next" && state.DestinationFailure != "Stop")
                 throw Invalid("位置不可用时的处理方式必须为 Next 或 Stop。");

@@ -20,7 +20,7 @@ namespace PhotoImportV2
         string activePage = "import", lastLog, pickerSignature, cardsSignature, locationsSignature;
         Action primary;
         public Action Register, Import, Preferences, Rescan, Cancel, Pause, OpenLogs, ChromeChanged, AddLocation, EditExclusions;
-        public Action EditTransferSettings;
+        public Action EditTransferSettings, ConfigureOrganization;
         public Action<string> SelectCard, ThemeChanged, FailureChanged;
         public Action<bool> StartupChanged, NewCardPromptChanged;
         public Action<string, string> LocationAction, CardAction;
@@ -46,6 +46,7 @@ namespace PhotoImportV2
             Connect("AddLocationButton", delegate { if (AddLocation != null) AddLocation(); });
             Connect("ExclusionsButton", delegate { if (EditExclusions != null) EditExclusions(); });
             Connect("TransferSettingsButton", delegate { if (EditTransferSettings != null) EditTransferSettings(); });
+            Connect("OrganizationButton", delegate { if (ConfigureOrganization != null) ConfigureOrganization(); });
             Get<ComboBox>("CardPicker").SelectionChanged += delegate {
                 if (!refreshing && SelectCard != null) { var item = Get<ComboBox>("CardPicker").SelectedItem as PickerItem; if (item != null) SelectCard(item.Root); }
             };
@@ -72,6 +73,7 @@ namespace PhotoImportV2
         internal bool PrimaryEnabled { get { return Get<Button>("PrimaryAction").IsEnabled; } }
         internal string PhotoCaption { get { return Get<TextBlock>("PhotoCount").Text; } }
         internal string ConcurrencyCaption { get { return Get<TextBlock>("ConcurrencySummary").Text; } }
+        internal string OrganizationCaption { get { return Get<TextBlock>("OrganizationSummary").Text; } }
         void Connect(string name, Action action) { Get<Button>(name).Click += delegate { action(); }; }
         void SystemThemeChanged(object sender, UserPreferenceChangedEventArgs e) { Dispatcher.BeginInvoke(new Action(ApplyTheme)); }
         void ApplyTheme()
@@ -188,6 +190,7 @@ namespace PhotoImportV2
                 Get<CheckBox>("NewCardsCheck").IsChecked = state.PromptForNewCards != false;
                 Get<ComboBox>("FailurePicker").SelectedIndex = state.DestinationFailure == "Stop" ? 1 : 0; Get<TextBlock>("NextBatchNote").Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
                 Get<TextBlock>("ExclusionsSummary").Text = "照片和视频" + (state.ExcludedExtensions.Count > 0 ? " · 排除 " + String.Join(", ", state.ExcludedExtensions) : "");
+                Get<TextBlock>("OrganizationSummary").Text = OrganizationSettings.Summary(state.Organization) + " · 保留原文件名";
                 Get<TextBlock>("ConcurrencySummary").Text = (state.AutoParallel != false ? "自动 · 从 1 路开始，最多 " : "固定 · 同时 ") + StorageSettings.Parallel(state) + " 个文件";
                 Get<TextBlock>("TransferSettingsSummary").Text = "无进展超时 " + StorageSettings.IdleSeconds(state) + " 秒 · 大文件 ≥ " + (StorageSettings.LargeBytes(state) / (1024d * 1024)).ToString("0.##") + " MiB";
                 RenderLocations(state, busy); RenderRegisteredCards(state, disks, busy);

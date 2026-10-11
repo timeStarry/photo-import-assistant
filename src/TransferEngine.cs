@@ -76,7 +76,9 @@ namespace PhotoImportV2
             string relative = source.Substring(TransferPaths.Prefix(root).Length);
             ValidateRelative(work.File.RelativePath, relative);
             string destinationRoot = TransferPaths.Full(work.DestinationRoot);
-            string destination = TransferPaths.Full(Path.Combine(destinationRoot, relative));
+            // Legacy requests could omit RelativePath; only implicit legacy targets use the validated source path.
+            string targetRelative = String.IsNullOrEmpty(work.File.RelativePath) && work.File.TargetRelativePath == null ? relative : OrganizationSettings.Target(work.File);
+            string destination = TransferPaths.Full(Path.Combine(destinationRoot, targetRelative.Replace('/', '\\')));
             ValidateDestination(root, source, destination);
             Require(TransferPaths.Child(destinationRoot, destination), "Destination escaped its root.");
 
@@ -351,7 +353,8 @@ namespace PhotoImportV2
                 Operation = request.Operation, SourceRoot = request.SourceRoot, CardId = request.CardId,
                 ExpectedSerial = request.ExpectedSerial, ExpectedCapacity = request.ExpectedCapacity,
                 DestinationRoot = request.DestinationRoot, DestinationKind = request.DestinationKind,
-                File = file == null ? null : new MediaItem { SourcePath = file.SourcePath, RelativePath = file.RelativePath, Length = file.Length, WriteTicks = file.WriteTicks },
+                File = file == null ? null : new MediaItem { SourcePath = file.SourcePath, RelativePath = file.RelativePath, Length = file.Length, WriteTicks = file.WriteTicks,
+                    CaptureDate = file.CaptureDate, CaptureDateSource = file.CaptureDateSource, TargetRelativePath = file.TargetRelativePath },
                 Receipt = receipt == null ? null : new TransferReceipt
                 {
                     SourcePath = receipt.SourcePath, SourceRoot = receipt.SourceRoot, CardId = receipt.CardId,

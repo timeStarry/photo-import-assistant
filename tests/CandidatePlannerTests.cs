@@ -196,7 +196,7 @@ namespace PhotoImportV2
                 WorkResult result = fixture.Plan(request, delegate(CandidateProgress progress)
                 {
                     // The source progress report occurs after target inventory and before opening the source.
-                    if (!changed && progress.Processed == 0 && progress.Message.EndsWith(fixture.Snapshot.RelativePath, StringComparison.Ordinal))
+                    if (!changed && progress.Processed == 0 && progress.Message.StartsWith("对比内容 · ", StringComparison.Ordinal) && progress.Message.EndsWith(fixture.Snapshot.RelativePath, StringComparison.Ordinal))
                     { mutate(fixture); changed = true; }
                 });
                 Assert(changed, "Fixture mutation did not run after target inventory.");
@@ -228,7 +228,7 @@ namespace PhotoImportV2
                 WorkRequest request = fixture.Request(fixture.Snapshot, second);
                 WorkResult result = fixture.Plan(request, delegate(CandidateProgress progress)
                 {
-                    if (!changed && progress.Processed == 1)
+                    if (!changed && progress.Processed == 1 && progress.Message.StartsWith("对比内容 · ", StringComparison.Ordinal))
                     { fixture.ReplaceTargetPreservingMetadata(Changed(fixture.Data)); changed = true; }
                 });
                 Assert(changed, "The target was not replaced between positive comparisons.");
@@ -247,7 +247,7 @@ namespace PhotoImportV2
                 WorkRequest request = fixture.Request(fixture.Snapshot, second);
                 WorkResult result = fixture.Plan(request, delegate(CandidateProgress progress)
                 {
-                    if (!changed && progress.Processed == 1)
+                    if (!changed && progress.Processed == 1 && progress.Message.StartsWith("对比内容 · ", StringComparison.Ordinal))
                     { fixture.ReplaceTargetPreservingMetadata(fixture.Data); changed = true; }
                 });
                 Assert(changed && result.Success && result.Plan != null, "Non-match cache fixture did not complete.");
@@ -299,7 +299,7 @@ namespace PhotoImportV2
                 bool changed = false;
                 WorkResult result = fixture.Plan(fixture.Request(fixture.Snapshot, second), delegate(CandidateProgress progress)
                 {
-                    if (!changed && progress.Processed == 1)
+                    if (!changed && progress.Processed == 1 && progress.Message.StartsWith("对比内容 · ", StringComparison.Ordinal))
                     { fixture.SetTime(second.SourcePath, new DateTime(second.WriteTicks, DateTimeKind.Utc).AddSeconds(10)); changed = true; }
                 });
                 Assert(changed, "Source snapshot mutation did not run after partial progress.");

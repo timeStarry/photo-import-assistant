@@ -19,6 +19,8 @@ namespace PhotoImportV2
         }
 
         public static string Signature(DiskSnapshot disk, AppState state)
+        { return SignatureAt(disk, state, DateTime.UtcNow); }
+        internal static string SignatureAt(DiskSnapshot disk, AppState state, DateTime utcNow)
         {
             var text = new StringBuilder();
             Action<string> add = delegate(string value) { value = value ?? ""; text.Append(value.Length).Append(':').Append(value); };
@@ -27,6 +29,9 @@ namespace PhotoImportV2
             { add(file.SourcePath); add(file.RelativePath); add(file.Length.ToString()); add(file.WriteTicks.ToString()); }
             foreach (var target in ImportSettings.Ordered(state)) { add(target.Id); add(StorageSettings.Key(target)); }
             foreach (string extension in MediaRules.NormalizeExcluded(state.ExcludedExtensions)) add(extension);
+            var organization = OrganizationSettings.Normalize(state.Organization);
+            add(OrganizationSettings.Key(organization));
+            if (organization.Mode == "import") add(ImportDayAt(organization, utcNow));
             using (var hash = SHA256.Create()) return Convert.ToBase64String(hash.ComputeHash(Encoding.UTF8.GetBytes(text.ToString())));
         }
 
@@ -41,7 +46,8 @@ namespace PhotoImportV2
                     RelativePath = f.RelativePath, Length = f.Length, WriteTicks = f.WriteTicks }).ToList();
                 var excluded = MediaRules.NormalizeExcluded(request.ExcludedExtensions);
                 var targets = request.ComparisonTargets.Where(d => d.Enabled).Select(ImportSettings.Clone).ToList();
-                var plan = new CandidatePlan();
+                var organization = OrganizationSettings.Normalize(request.Organization);
+                var plan = new CandidatePlan { ImportDate = request.ImportDate ?? ImportDay(organization) };
                 var eligible = files.Where(f => MediaRules.Includes(f.RelativePath ?? f.SourcePath, excluded)).ToList();
                 plan.ExcludedCount = files.Count - eligible.Count;
                 var lengths = new HashSet<long>(eligible.Select(f => f.Length));
@@ -50,6 +56,7 @@ namespace PhotoImportV2
                 var unreadable = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 using (var identity = new TransferIdentity(root, request.CardId, request.ExpectedSerial, request.ExpectedCapacity))
                 {
+                    Organize(eligible, root, identity, organization, plan.ImportDate, progress);
                     foreach (var destination in targets)
                     {
                         if (StorageSettings.IsDirect(destination))
@@ -146,6 +153,59 @@ namespace PhotoImportV2
 
         static void Report(Action<CandidateProgress> callback, string message, int processed, int total)
         { if (callback != null) callback(new CandidateProgress { Message = message, Processed = processed, Total = total }); }
+        public static string ImportDay(OrganizationOptions options)
+        { return ImportDayAt(options, DateTime.UtcNow); }
+        internal static string ImportDayAt(OrganizationOptions options, DateTime utcNow)
+        {
+            var settings = OrganizationSettings.Normalize(options);
+            return TimeZoneInfo.ConvertTimeFromUtc(utcNow, TimeZoneInfo.FindSystemTimeZoneById(settings.TimeZoneId)).ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
+        }
+        static void Organize(List<MediaItem> files, string root, TransferIdentity identity, OrganizationOptions options, string importDate, Action<CandidateProgress> progress)
+        {
+            var capture = new Dictionary<string, CaptureInfo>(StringComparer.OrdinalIgnoreCase);
+            var pairs = new Dictionary<string, List<CaptureInfo>>(StringComparer.OrdinalIgnoreCase);
+            int index = 0;
+            foreach (var file in files)
+            {
+                Report(progress, "对比准备 · 读取拍摄日期 · " + file.RelativePath, index++, files.Count);
+                string source = TransferPaths.Full(file.SourcePath);
+                TransferEngine.Require(TransferPaths.Child(Path.Combine(root, "DCIM"), source) && !TransferPaths.IsPartial(source), "Unsafe organization source.");
+                TransferEngine.Require(String.Equals(source.Substring(TransferPaths.Prefix(root).Length), file.RelativePath.Replace('/', '\\'), StringComparison.OrdinalIgnoreCase), "Organization source path mismatch.");
+                var value = new CaptureInfo();
+                using (var directories = new TransferDirectories(Path.GetDirectoryName(source), false))
+                using (var input = TransferNative.OpenRead(source, false))
+                {
+                    TransferEngine.CheckSnapshot(input, file.Length, file.WriteTicks);
+                    if (options.Mode == "capture") value = CaptureDates.Read(input, Path.GetExtension(source), options.VideoTimeMode == "utc", options.TimeZoneId);
+                    TransferEngine.CheckSnapshot(input, file.Length, file.WriteTicks); identity.Recheck();
+                }
+                capture.Add(source, value);
+                if (Pairable(file) && value.Taken.HasValue)
+                {
+                    string key = Path.Combine(Path.GetDirectoryName(source), Path.GetFileNameWithoutExtension(source));
+                    List<CaptureInfo> values;
+                    if (!pairs.TryGetValue(key, out values)) pairs[key] = values = new List<CaptureInfo>();
+                    values.Add(value);
+                }
+            }
+            foreach (var file in files)
+            {
+                var value = capture[TransferPaths.Full(file.SourcePath)];
+                if (options.Mode == "capture" && !value.Taken.HasValue && Pairable(file))
+                {
+                    List<CaptureInfo> values;
+                    string key = Path.Combine(Path.GetDirectoryName(file.SourcePath), Path.GetFileNameWithoutExtension(file.SourcePath));
+                    if (pairs.TryGetValue(key, out values) && values.Select(v => v.Taken.Value.Date).Distinct().Count() == 1)
+                        value = new CaptureInfo { Taken = values[0].Taken, Source = "同组照片拍摄时间" };
+                }
+                OrganizationSettings.Apply(file, options, importDate, value);
+            }
+        }
+        static bool Pairable(MediaItem file)
+        {
+            string extension = Path.GetExtension(file.RelativePath).ToLowerInvariant();
+            return extension == ".jpg" || extension == ".jpeg" || extension == ".nef" || extension == ".nrw";
+        }
         static string CompareHash(Stream input, long length, string path, int processed, int total, Action<CandidateProgress> progress)
         {
             var watch = System.Diagnostics.Stopwatch.StartNew();

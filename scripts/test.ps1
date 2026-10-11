@@ -98,7 +98,7 @@ function Invoke-SyntheticCheck {
 }
 
 $selfTestReport = Join-Path $runFolder 'self-test.txt'
-Invoke-SyntheticCheck -Switch '--self-test' -TargetPath $selfTestReport -ReportPath $selfTestReport -ExpectedPassLines 6
+Invoke-SyntheticCheck -Switch '--self-test' -TargetPath $selfTestReport -ReportPath $selfTestReport -ExpectedPassLines 10
 $davReport = Join-Path $runFolder 'webdav-test.txt'
 Invoke-SyntheticCheck -Switch '--self-test-webdav' -TargetPath $davReport -ReportPath $davReport -ExpectedPassLines 1
 $s3Report = Join-Path $runFolder 's3-test.txt'

@@ -12,6 +12,8 @@ docs/         架构和维护说明
 
 程序保持 C# 5 兼容，使用 .NET Framework 4.8。XAML 通过 `PhotoImportV2.FluentStyles.xaml` 和 `PhotoImportV2.FluentView.xaml` 嵌入资源后动态加载，不作为 WPF Page 编译。
 
+`CaptureDates` 负责有界时间解析，`OrganizationSettings` 负责纯配置和路径规则。新整理方式不能修改 SD 源相对路径；必须通过本地和直接远端传输、历史目录去重与删除授权回归测试。
+
 ## 验证
 
 在修改后的源码上执行：

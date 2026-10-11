@@ -31,6 +31,7 @@ namespace PhotoImportV2
         public int? IdleTimeoutSeconds { get; set; }
         public bool? AutoParallel { get; set; }
         public long? LargeFileBytes { get; set; }
+        public OrganizationOptions Organization { get; set; }
         public List<CardRecord> Cards { get; set; }
         public AppState() { Version = 2; Cards = new List<CardRecord>(); }
     }
@@ -60,6 +61,18 @@ namespace PhotoImportV2
         public string RelativePath { get; set; }
         public long Length { get; set; }
         public long WriteTicks { get; set; }
+        public string CaptureDate { get; set; }
+        public string CaptureDateSource { get; set; }
+        public string TargetRelativePath { get; set; }
+    }
+    public class OrganizationOptions
+    {
+        public string Mode { get; set; }
+        public string DateLayout { get; set; }
+        public string MissingDate { get; set; }
+        public bool SeparateMedia { get; set; }
+        public string VideoTimeMode { get; set; }
+        public string TimeZoneId { get; set; }
     }
     public class DiskSnapshot
     {
@@ -111,6 +124,8 @@ namespace PhotoImportV2
         public DestinationRecord Target { get; set; }
         public bool ReadOnlyProbe { get; set; }
         public int IdleTimeoutSeconds { get; set; }
+        public OrganizationOptions Organization { get; set; }
+        public string ImportDate { get; set; }
     }
     public class WorkResult
     {
@@ -128,6 +143,7 @@ namespace PhotoImportV2
         public List<MediaItem> Candidates { get; set; }
         public int ExistingCount { get; set; }
         public int ExcludedCount { get; set; }
+        public string ImportDate { get; set; }
         public List<string> Warnings { get; set; }
         public CandidatePlan() { Candidates = new List<MediaItem>(); Warnings = new List<string>(); }
     }

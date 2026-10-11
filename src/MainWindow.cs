@@ -69,6 +69,7 @@ namespace PhotoImportV2
             view.StartupChanged = async delegate(bool enabled) { await ChangeStartup(enabled); };
             view.EditExclusions = delegate { EditExclusions(); };
             view.EditTransferSettings = delegate { EditTransferSettings(); };
+            view.ConfigureOrganization = delegate { EditOrganization(); };
             view.Cancel = delegate { if (cancellation != null) cancellation.Cancel(); };
             view.Pause = delegate { TogglePause(); };
             view.OpenLogs = delegate { if (!preview) System.Diagnostics.Process.Start("explorer.exe", store.Root); };
@@ -321,6 +322,26 @@ namespace PhotoImportV2
             }
             finally { prompting = false; UpdateDetails(); }
         }
+        void EditOrganization()
+        {
+            if (prompting || exiting) return;
+            prompting = true;
+            try
+            {
+                using (var dialog = new OrganizationDialog(store.State.Organization))
+                {
+                    if (dialog.ShowDialog(this) != DialogResult.OK || exiting) return;
+                    var old = store.State.Organization;
+                    try
+                    {
+                        store.State.Organization = OrganizationSettings.Normalize(dialog.SelectedOptions);
+                        store.Save(); comparisons.Clear(); BindPlans(); lastScan = DateTime.MinValue;
+                    }
+                    catch (Exception error) { store.State.Organization = old; ShowSettingsError(error); }
+                }
+            }
+            finally { prompting = false; UpdateDetails(); }
+        }
         void BindPlans()
         {
             foreach (var disk in disks)
@@ -345,7 +366,8 @@ namespace PhotoImportV2
             status.Text = "正在对比目标内容…";
             var request = new WorkRequest { Operation = "plan", SourceRoot = disk.Root, CardId = disk.MarkerId,
                 ExpectedSerial = disk.Serial, ExpectedCapacity = disk.Capacity, CandidateFiles = disk.Media, IdleTimeoutSeconds = StorageSettings.IdleSeconds(store.State),
-                ComparisonTargets = targets, ExcludedExtensions = MediaRules.NormalizeExcluded(store.State.ExcludedExtensions) };
+                ComparisonTargets = targets, ExcludedExtensions = MediaRules.NormalizeExcluded(store.State.ExcludedExtensions),
+                Organization = OrganizationSettings.Normalize(store.State.Organization), ImportDate = CandidatePlanner.ImportDay(store.State.Organization) };
             activeImport = CompareAsync(disk, signature, identityGeneration, request, cancellation.Token);
             await activeImport;
         }
@@ -523,6 +545,7 @@ namespace PhotoImportV2
             var files = disk.Plan == null ? null : disk.Plan.Candidates.ToList();
             if (files == null || files.Count == 0) { UpdateDetails(); return; }
             string confirmedSignature = comparison.Signature;
+            var organization = OrganizationSettings.Normalize(store.State.Organization);
             int confirmedGeneration = identityGeneration;
             string failurePolicy = store.State.DestinationFailure;
             var availability = new List<LocationAvailability>();
@@ -536,21 +559,33 @@ namespace PhotoImportV2
             catch (Exception ex) { WriteLog("位置检查已停止：" + ex.Message); return; }
             finally { busy = false; activeRoot = null; cancellation.Dispose(); cancellation = null; activeImport = null; UpdateDetails(); }
             targets = availability.Where(a => a.Available).Select(a => a.Destination).ToList();
-            bool makeDefault = false;
+            bool makeDefault = false, editOrganization = false;
             Reveal(); prompting = true;
             try
             {
                 if (manual || !card.AutoImport || availability.Any(a => !a.Available))
                 {
-                    using (var dialog = new ImportDialog(card, disk, files, availability, failurePolicy))
+                    using (var dialog = new ImportDialog(card, disk, files, availability, failurePolicy, organization))
                     {
-                        if (dialog.ShowDialog(this) != DialogResult.Yes) return;
-                        targets = dialog.SelectedTargets.Select(ImportSettings.Clone).ToList(); makeDefault = dialog.MakeDefault;
-                        if (dialog.Remember) { card.AutoImport = true; store.Save(); }
+                        var choice = dialog.ShowDialog(this);
+                        if (dialog.OrganizationEditRequested && choice == DialogResult.Retry) editOrganization = true;
+                        else
+                        {
+                            if (choice != DialogResult.Yes) return;
+                            targets = dialog.SelectedTargets.Select(ImportSettings.Clone).ToList(); makeDefault = dialog.MakeDefault;
+                            if (dialog.Remember) { card.AutoImport = true; store.Save(); }
+                        }
                     }
                 }
             }
             finally { prompting = false; }
+            if (editOrganization)
+            {
+                EditOrganization();
+                // Organization changes invalidate resolved paths; never reuse an old confirmation.
+                if (!exiting && PresentInLastScan(disk, card.Id)) await BeginImport(disk, card, true);
+                return;
+            }
             if (targets.Count == 0) return;
             if (exiting || !PresentInLastScan(disk, card.Id)) return;
             var latest = disks.FirstOrDefault(d => d.Root == disk.Root);

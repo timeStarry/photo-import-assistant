@@ -20,6 +20,7 @@ namespace PhotoImportV2
             TransferEngine.Require(TransferPaths.Child(Path.Combine(root, "DCIM"), source) && !TransferPaths.IsPartial(source), "Unsafe source.");
             string relative = source.Substring(TransferPaths.Prefix(root).Length).Replace('\\', '/');
             TransferEngine.Require(String.Equals(relative, file.RelativePath.Replace('\\', '/'), StringComparison.OrdinalIgnoreCase), "Source relative path changed.");
+            relative = OrganizationSettings.Target(file);
             StorageSettings.Relative(relative, false);
             using (var identity = new TransferIdentity(root, request.CardId, request.ExpectedSerial, request.ExpectedCapacity))
             using (var directories = new TransferDirectories(Path.GetDirectoryName(source), false))

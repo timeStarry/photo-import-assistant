@@ -88,7 +88,7 @@ namespace PhotoImportV2
                 {
                     string result = args[0] == "--self-test-webdav" ? WebDavStoreTests.Run() : args[0] == "--self-test-s3" ? S3StoreTests.Run() : TransferEngineTests.Run() + Environment.NewLine + ConfigurationTests.Run() + Environment.NewLine +
                         MediaRulesTests.Run() + Environment.NewLine + CandidatePlannerTests.Run() + Environment.NewLine + CandidateWorkerTests.Run() + Environment.NewLine +
-                        TransferPipelineTests.Run();
+                        TransferPipelineTests.Run() + Environment.NewLine + CaptureDatesTests.Run() + Environment.NewLine + OrganizationTests.Run() + Environment.NewLine + OrganizedTransferTests.Run() + Environment.NewLine + OrganizationPairTests.Run();
                     if (args.Length > 1) File.WriteAllText(args[1], result);
                     return 0;
                 }
